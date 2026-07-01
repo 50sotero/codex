@@ -63,6 +63,14 @@ impl ThreadGoalRequestProcessor {
             .map(|()| None)
     }
 
+    pub(crate) async fn thread_goal_complete_all(
+        &self,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_goal_complete_all_inner()
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn emit_resume_goal_snapshot_and_continue(
         &self,
         thread_id: ThreadId,
@@ -214,6 +222,30 @@ impl ThreadGoalRequestProcessor {
                 .await;
         }
         Ok(())
+    }
+
+    async fn thread_goal_complete_all_inner(
+        &self,
+    ) -> Result<ThreadGoalCompleteAllResponse, JSONRPCErrorError> {
+        if !self.config.features.enabled(Feature::Goals) {
+            return Err(invalid_request("goals feature is disabled"));
+        }
+
+        let state_db = self
+            .state_db
+            .clone()
+            .ok_or_else(|| internal_error("sqlite state db unavailable for thread goals"))?;
+        let outcome = state_db
+            .thread_goals()
+            .complete_all_thread_goals()
+            .await
+            .map_err(|err| internal_error(format!("failed to complete all thread goals: {err}")))?;
+
+        Ok(ThreadGoalCompleteAllResponse {
+            updated_count: outcome.updated_count,
+            already_complete_count: outcome.already_complete_count,
+            total_count: outcome.total_count,
+        })
     }
 
     async fn state_db_for_materialized_thread(

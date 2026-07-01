@@ -475,6 +475,53 @@
             },
             "method": {
               "enum": [
+                "thread/goal/completeAll"
+              ],
+              "title": "Thread/goal/completeAllRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "id",
+            "method"
+          ],
+          "title": "Thread/goal/completeAllRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/automation/completedSummary"
+              ],
+              "title": "Thread/automation/completedSummaryRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadAutomationCompletedSummaryParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/automation/completedSummaryRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/metadata/update"
               ],
               "title": "Thread/metadata/updateRequestMethod",
@@ -17166,6 +17213,71 @@
         "title": "ThreadArchivedNotification",
         "type": "object"
       },
+      "ThreadAutomationCompletedSummary": {
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "goal": {
+            "$ref": "#/definitions/v2/ThreadGoal"
+          },
+          "thread": {
+            "$ref": "#/definitions/v2/Thread"
+          }
+        },
+        "required": [
+          "archived",
+          "goal",
+          "thread"
+        ],
+        "type": "object"
+      },
+      "ThreadAutomationCompletedSummaryParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cursor": {
+            "description": "Opaque pagination cursor returned by a previous call.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "description": "Optional page size; defaults to a reasonable server-side value.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "ThreadAutomationCompletedSummaryParams",
+        "type": "object"
+      },
+      "ThreadAutomationCompletedSummaryResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/definitions/v2/ThreadAutomationCompletedSummary"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "description": "Opaque cursor to pass to the next call to continue after the last item. If None, there are no more items to return.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "ThreadAutomationCompletedSummaryResponse",
+        "type": "object"
+      },
       "ThreadClosedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -17496,6 +17608,33 @@
           "threadId"
         ],
         "title": "ThreadGoalClearedNotification",
+        "type": "object"
+      },
+      "ThreadGoalCompleteAllResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "alreadyCompleteCount": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "totalCount": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "updatedCount": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "alreadyCompleteCount",
+          "totalCount",
+          "updatedCount"
+        ],
+        "title": "ThreadGoalCompleteAllResponse",
         "type": "object"
       },
       "ThreadGoalGetParams": {

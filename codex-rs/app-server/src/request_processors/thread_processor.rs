@@ -9,6 +9,8 @@ use codex_protocol::protocol::ThreadHistoryMode;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
+const THREAD_AUTOMATION_COMPLETED_SUMMARY_DEFAULT_LIMIT: usize = 25;
+const THREAD_AUTOMATION_COMPLETED_SUMMARY_MAX_LIMIT: usize = 100;
 const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
 const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
     "thread/rollback is deprecated and will be removed soon";
@@ -664,6 +666,15 @@ impl ThreadRequestProcessor {
         params: ThreadListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_list_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_automation_completed_summary(
+        &self,
+        params: ThreadAutomationCompletedSummaryParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_automation_completed_summary_inner(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -2003,6 +2014,110 @@ impl ThreadRequestProcessor {
             next_cursor,
             backwards_cursor,
         })
+    }
+
+    async fn thread_automation_completed_summary_inner(
+        &self,
+        params: ThreadAutomationCompletedSummaryParams,
+    ) -> Result<ThreadAutomationCompletedSummaryResponse, JSONRPCErrorError> {
+        if !self.config.features.enabled(Feature::Goals) {
+            return Err(invalid_request("goals feature is disabled"));
+        }
+
+        let state_db = self
+            .state_db
+            .clone()
+            .ok_or_else(|| internal_error("sqlite state db unavailable for thread goals"))?;
+        let requested_page_size = params
+            .limit
+            .map(|value| value as usize)
+            .unwrap_or(THREAD_AUTOMATION_COMPLETED_SUMMARY_DEFAULT_LIMIT)
+            .clamp(1, THREAD_AUTOMATION_COMPLETED_SUMMARY_MAX_LIMIT);
+        let mut cursor = params.cursor;
+        let mut data = Vec::with_capacity(requested_page_size);
+        let mut next_cursor = None;
+
+        while data.len() < requested_page_size {
+            let remaining = requested_page_size - data.len();
+            let page = state_db
+                .thread_goals()
+                .list_completed_thread_goals(remaining, cursor.as_deref())
+                .await
+                .map_err(|err| {
+                    invalid_request(format!("failed to list completed thread goals: {err}"))
+                })?;
+            let page_next_cursor = page.next_cursor.clone();
+
+            for state_goal in page.data {
+                let thread_id = state_goal.thread_id;
+                let stored_thread = match self
+                    .thread_store
+                    .read_thread(StoreReadThreadParams {
+                        thread_id,
+                        include_archived: true,
+                        include_history: false,
+                    })
+                    .await
+                {
+                    Ok(stored_thread) => stored_thread,
+                    Err(ThreadStoreError::ThreadNotFound { .. }) => {
+                        warn!("skipping completed goal for missing thread {thread_id}");
+                        continue;
+                    }
+                    Err(err) => return Err(thread_store_resume_read_error(err)),
+                };
+                let metadata_thread_source = state_db
+                    .get_thread(thread_id)
+                    .await
+                    .map_err(|err| {
+                        internal_error(format!("failed to read thread metadata: {err}"))
+                    })?
+                    .and_then(|metadata| metadata.thread_source);
+
+                if !is_automation_thread_source(&metadata_thread_source)
+                    && !is_automation_thread_source(&stored_thread.thread_source)
+                {
+                    continue;
+                }
+
+                let archived = stored_thread.archived_at.is_some();
+                let (mut thread, _) = thread_from_stored_thread(
+                    stored_thread,
+                    self.config.model_provider_id.as_str(),
+                    &self.config.cwd,
+                );
+                if thread.thread_source.is_none() {
+                    thread.thread_source = metadata_thread_source.map(Into::into);
+                }
+                data.push(ThreadAutomationCompletedSummary {
+                    thread,
+                    goal: api_thread_goal_from_state(state_goal),
+                    archived,
+                });
+            }
+
+            next_cursor = page_next_cursor.clone();
+            if data.len() >= requested_page_size || page_next_cursor.is_none() {
+                break;
+            }
+            cursor = page_next_cursor;
+        }
+
+        let status_ids = data
+            .iter()
+            .map(|item| item.thread.id.clone())
+            .collect::<Vec<_>>();
+        let statuses = self
+            .thread_watch_manager
+            .loaded_statuses_for_threads(status_ids)
+            .await;
+        for item in &mut data {
+            if let Some(status) = statuses.get(&item.thread.id) {
+                item.thread.status = status.clone();
+            }
+        }
+
+        Ok(ThreadAutomationCompletedSummaryResponse { data, next_cursor })
     }
 
     async fn thread_search_response_inner(
@@ -4091,6 +4206,15 @@ fn thread_read_view_error(err: ThreadReadViewError) -> JSONRPCErrorError {
         }
         ThreadReadViewError::Internal(message) => internal_error(message),
     }
+}
+
+fn is_automation_thread_source(
+    thread_source: &Option<codex_protocol::protocol::ThreadSource>,
+) -> bool {
+    matches!(
+        thread_source,
+        Some(codex_protocol::protocol::ThreadSource::Feature(feature)) if feature == "automation"
+    )
 }
 
 pub(super) fn unsupported_thread_store_operation(operation: &'static str) -> JSONRPCErrorError {

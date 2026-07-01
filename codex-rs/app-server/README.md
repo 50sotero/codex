@@ -153,6 +153,8 @@ Example with notification opt-out:
 - `thread/goal/set` — create or update the single persisted goal for a materialized thread; returns the current goal and emits `thread/goal/updated`.
 - `thread/goal/get` — fetch the current persisted goal for a materialized thread; returns `goal: null` when no goal exists.
 - `thread/goal/clear` — clear the current persisted goal for a materialized thread; returns whether a goal was removed and emits `thread/goal/cleared` when state changes.
+- `thread/goal/completeAll` — mark every persisted thread goal as `complete`; returns counts for changed, already complete, and total goals.
+- `thread/automation/completedSummary` — page through completed automation-source thread goals; returns each matching `thread`, its `goal`, archive state, and a `nextCursor`.
 - `thread/goal/updated` — notification emitted whenever a thread goal changes; includes the full current goal.
 - `thread/goal/cleared` — notification emitted whenever a thread goal is removed.
 - `thread/settings/updated` — experimental notification emitted to subscribed clients when a loaded thread’s effective next-turn settings change; includes `threadId` and the full `threadSettings`.
@@ -635,6 +637,34 @@ Use `thread/goal/clear` to remove the current goal.
 { "method": "thread/goal/clear", "id": 30, "params": { "threadId": "thr_123" } }
 { "id": 30, "result": { "cleared": true } }
 { "method": "thread/goal/cleared", "params": { "threadId": "thr_123" } }
+```
+
+Use `thread/goal/completeAll` to mark every persisted goal as complete in one serialized state update. This is a bulk state operation; clients that keep local goal views should refresh after the response.
+
+```json
+{ "method": "thread/goal/completeAll", "id": 31 }
+{ "id": 31, "result": {
+    "updatedCount": 12,
+    "alreadyCompleteCount": 4,
+    "totalCount": 16
+} }
+```
+
+Use `thread/automation/completedSummary` to page through completed automation-source threads and their final goals.
+
+```json
+{ "method": "thread/automation/completedSummary", "id": 32, "params": {
+    "limit": 25,
+    "cursor": null
+} }
+{ "id": 32, "result": {
+    "data": [{
+        "thread": { "id": "thr_automation", "status": { "type": "notLoaded" } },
+        "goal": { "threadId": "thr_automation", "status": "complete" },
+        "archived": false
+    }],
+    "nextCursor": null
+} }
 ```
 
 ### Example: Archive a thread

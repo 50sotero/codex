@@ -393,6 +393,9 @@ export type { ThreadApproveGuardianDeniedActionResponse } from "./ThreadApproveG
 export type { ThreadArchiveParams } from "./ThreadArchiveParams";
 export type { ThreadArchiveResponse } from "./ThreadArchiveResponse";
 export type { ThreadArchivedNotification } from "./ThreadArchivedNotification";
+export type { ThreadAutomationCompletedSummary } from "./ThreadAutomationCompletedSummary";
+export type { ThreadAutomationCompletedSummaryParams } from "./ThreadAutomationCompletedSummaryParams";
+export type { ThreadAutomationCompletedSummaryResponse } from "./ThreadAutomationCompletedSummaryResponse";
 export type { ThreadClosedNotification } from "./ThreadClosedNotification";
 export type { ThreadCompactStartParams } from "./ThreadCompactStartParams";
 export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
@@ -406,6 +409,7 @@ export type { ThreadGoal } from "./ThreadGoal";
 export type { ThreadGoalClearParams } from "./ThreadGoalClearParams";
 export type { ThreadGoalClearResponse } from "./ThreadGoalClearResponse";
 export type { ThreadGoalClearedNotification } from "./ThreadGoalClearedNotification";
+export type { ThreadGoalCompleteAllResponse } from "./ThreadGoalCompleteAllResponse";
 export type { ThreadGoalGetParams } from "./ThreadGoalGetParams";
 export type { ThreadGoalGetResponse } from "./ThreadGoalGetResponse";
 export type { ThreadGoalSetParams } from "./ThreadGoalSetParams";

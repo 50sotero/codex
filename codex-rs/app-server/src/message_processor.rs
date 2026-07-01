@@ -1169,6 +1169,14 @@ impl MessageProcessor {
                     .thread_goal_clear(request_id.clone(), params)
                     .await
             }
+            ClientRequest::ThreadGoalCompleteAll { .. } => {
+                self.thread_goal_processor.thread_goal_complete_all().await
+            }
+            ClientRequest::ThreadAutomationCompletedSummary { params, .. } => {
+                self.thread_processor
+                    .thread_automation_completed_summary(params)
+                    .await
+            }
             ClientRequest::ThreadMetadataUpdate { params, .. } => {
                 self.thread_processor.thread_metadata_update(params).await
             }

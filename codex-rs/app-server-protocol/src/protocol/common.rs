@@ -545,6 +545,16 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadGoalClearResponse,
     },
+    ThreadGoalCompleteAll => "thread/goal/completeAll" {
+        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        serialization: global("thread-goals"),
+        response: v2::ThreadGoalCompleteAllResponse,
+    },
+    ThreadAutomationCompletedSummary => "thread/automation/completedSummary" {
+        params: v2::ThreadAutomationCompletedSummaryParams,
+        serialization: global_shared_read("thread-goals"),
+        response: v2::ThreadAutomationCompletedSummaryResponse,
+    },
     ThreadMetadataUpdate => "thread/metadata/update" {
         params: v2::ThreadMetadataUpdateParams,
         serialization: thread_id(params.thread_id),
@@ -1984,6 +1994,29 @@ mod tests {
             Some(ClientRequestSerializationScope::Thread {
                 thread_id: "goal-thread".to_string()
             })
+        );
+
+        let thread_goal_complete_all = ClientRequest::ThreadGoalCompleteAll {
+            request_id: request_id(),
+            params: None,
+        };
+        assert_eq!(
+            thread_goal_complete_all.serialization_scope(),
+            Some(ClientRequestSerializationScope::Global("thread-goals"))
+        );
+
+        let automation_completed_summary = ClientRequest::ThreadAutomationCompletedSummary {
+            request_id: request_id(),
+            params: v2::ThreadAutomationCompletedSummaryParams {
+                cursor: None,
+                limit: Some(25),
+            },
+        };
+        assert_eq!(
+            automation_completed_summary.serialization_scope(),
+            Some(ClientRequestSerializationScope::GlobalSharedRead(
+                "thread-goals"
+            ))
         );
 
         let guardian_approval = ClientRequest::ThreadApproveGuardianDeniedAction {
@@ -3559,6 +3592,17 @@ mod tests {
                 thread_id: "thr_123".to_string(),
             },
         };
+        let complete_all_request = ClientRequest::ThreadGoalCompleteAll {
+            request_id: RequestId::Integer(4),
+            params: None,
+        };
+        let automation_summary_request = ClientRequest::ThreadAutomationCompletedSummary {
+            request_id: RequestId::Integer(5),
+            params: v2::ThreadAutomationCompletedSummaryParams {
+                cursor: None,
+                limit: Some(10),
+            },
+        };
 
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&set_request),
@@ -3570,6 +3614,16 @@ mod tests {
         );
         assert_eq!(
             crate::experimental_api::ExperimentalApi::experimental_reason(&clear_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(&complete_all_request),
+            None
+        );
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(
+                &automation_summary_request
+            ),
             None
         );
     }

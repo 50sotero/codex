@@ -24,6 +24,19 @@ pub struct GoalUpdate {
     pub expected_goal_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompleteAllThreadGoalsOutcome {
+    pub updated_count: u64,
+    pub already_complete_count: u64,
+    pub total_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletedThreadGoalsPage {
+    pub data: Vec<crate::ThreadGoal>,
+    pub next_cursor: Option<String>,
+}
+
 pub enum GoalAccountingOutcome {
     Unchanged(Option<crate::ThreadGoal>),
     Updated(crate::ThreadGoal),
@@ -38,6 +51,112 @@ pub enum GoalAccountingMode {
 }
 
 impl GoalStore {
+    pub async fn complete_all_thread_goals(&self) -> anyhow::Result<CompleteAllThreadGoalsOutcome> {
+        let complete_status = crate::ThreadGoalStatus::Complete.as_str();
+        let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM thread_goals")
+            .fetch_one(self.pool.as_ref())
+            .await?;
+        let already_complete_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM thread_goals WHERE status = ?")
+                .bind(complete_status)
+                .fetch_one(self.pool.as_ref())
+                .await?;
+        let now_ms = datetime_to_epoch_millis(Utc::now());
+        let result = sqlx::query(
+            r#"
+UPDATE thread_goals
+SET
+    status = ?,
+    updated_at_ms = ?
+WHERE status <> ?
+            "#,
+        )
+        .bind(complete_status)
+        .bind(now_ms)
+        .bind(complete_status)
+        .execute(self.pool.as_ref())
+        .await?;
+
+        Ok(CompleteAllThreadGoalsOutcome {
+            updated_count: result.rows_affected(),
+            already_complete_count: already_complete_count.try_into().unwrap_or(0),
+            total_count: total_count.try_into().unwrap_or(0),
+        })
+    }
+
+    pub async fn list_completed_thread_goals(
+        &self,
+        page_size: usize,
+        cursor: Option<&str>,
+    ) -> anyhow::Result<CompletedThreadGoalsPage> {
+        if page_size == 0 {
+            return Ok(CompletedThreadGoalsPage {
+                data: Vec::new(),
+                next_cursor: None,
+            });
+        }
+
+        let cursor = cursor
+            .map(decode_completed_thread_goals_cursor)
+            .transpose()?;
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            r#"
+SELECT
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
+FROM thread_goals
+WHERE status =
+            "#,
+        );
+        builder.push_bind(crate::ThreadGoalStatus::Complete.as_str());
+        if let Some((updated_at_ms, thread_id)) = cursor {
+            builder.push("\n  AND (\n      updated_at_ms < ");
+            builder.push_bind(updated_at_ms);
+            builder.push("\n      OR (updated_at_ms = ");
+            builder.push_bind(updated_at_ms);
+            builder.push(" AND thread_id < ");
+            builder.push_bind(thread_id);
+            builder.push(")");
+            builder.push(")");
+        }
+        builder.push(
+            r#"
+ORDER BY updated_at_ms DESC, thread_id DESC
+LIMIT
+            "#,
+        );
+        builder.push_bind((page_size + 1) as i64);
+
+        let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
+        let has_next_page = rows.len() > page_size;
+        let rows = rows.into_iter().take(page_size).collect::<Vec<_>>();
+        let next_cursor = if has_next_page {
+            rows.last()
+                .map(|row| {
+                    encode_completed_thread_goals_cursor(
+                        row.get("updated_at_ms"),
+                        row.get::<String, _>("thread_id").as_str(),
+                    )
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        let data = rows
+            .into_iter()
+            .map(|row| thread_goal_from_row(&row))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        Ok(CompletedThreadGoalsPage { data, next_cursor })
+    }
+
     pub async fn get_thread_goal(
         &self,
         thread_id: ThreadId,
@@ -525,6 +644,29 @@ RETURNING
 
 fn thread_goal_from_row(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<crate::ThreadGoal> {
     ThreadGoalRow::try_from_row(row).and_then(crate::ThreadGoal::try_from)
+}
+
+fn encode_completed_thread_goals_cursor(
+    updated_at_ms: i64,
+    thread_id: &str,
+) -> anyhow::Result<String> {
+    if thread_id.is_empty() {
+        anyhow::bail!("invalid completed thread goals cursor: empty thread id");
+    }
+    Ok(format!("{updated_at_ms}:{thread_id}"))
+}
+
+fn decode_completed_thread_goals_cursor(cursor: &str) -> anyhow::Result<(i64, String)> {
+    let (updated_at_ms, thread_id) = cursor
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("invalid completed thread goals cursor"))?;
+    let updated_at_ms = updated_at_ms
+        .parse::<i64>()
+        .map_err(|_| anyhow::anyhow!("invalid completed thread goals cursor"))?;
+    if thread_id.is_empty() {
+        anyhow::bail!("invalid completed thread goals cursor");
+    }
+    Ok((updated_at_ms, thread_id.to_string()))
 }
 
 fn status_after_budget_limit(

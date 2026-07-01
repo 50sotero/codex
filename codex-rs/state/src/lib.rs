@@ -57,6 +57,8 @@ pub use model::ThreadMetadata;
 pub use model::ThreadMetadataBuilder;
 pub use model::ThreadRelationFilter;
 pub use model::ThreadsPage;
+pub use runtime::CompleteAllThreadGoalsOutcome;
+pub use runtime::CompletedThreadGoalsPage;
 pub use runtime::ExternalAgentConfigImportDetailsRecord;
 pub use runtime::ExternalAgentConfigImportFailureRecord;
 pub use runtime::ExternalAgentConfigImportHistoryRecord;
