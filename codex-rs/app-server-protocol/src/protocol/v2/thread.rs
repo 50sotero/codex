@@ -3,6 +3,7 @@ use super::ApprovalsReviewer;
 use super::AskForApproval;
 use super::SandboxMode;
 use super::SandboxPolicy;
+use super::SessionSource;
 use super::Thread;
 use super::ThreadHistoryMode;
 use super::ThreadItem;
@@ -1284,6 +1285,115 @@ pub struct ThreadReadParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadReadResponse {
     pub thread: Thread,
+}
+
+/// Scope for read-state and side-summary operations.
+#[derive(Default, Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadReadStateScope {
+    /// Optional provider filter; when omitted, defaults to the current provider.
+    /// When present but empty, includes all providers.
+    #[ts(optional = nullable)]
+    pub model_providers: Option<Vec<String>>,
+    /// Optional source filter; when omitted or empty, defaults to interactive sources.
+    #[ts(optional = nullable)]
+    pub source_kinds: Option<Vec<ThreadSourceKind>>,
+    /// Optional archived filter; when true, matches archived threads instead of active threads.
+    #[ts(optional = nullable)]
+    pub archived: Option<bool>,
+    /// Optional cwd filter or filters.
+    #[ts(optional = nullable, type = "string | Array<string> | null")]
+    pub cwd: Option<ThreadListCwdFilter>,
+    /// Optional substring filter for the extracted thread title or preview.
+    #[ts(optional = nullable)]
+    pub search_term: Option<String>,
+    /// If true, read directly from the state DB without scanning JSONL rollouts to repair metadata.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub use_state_db_only: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadReadStateMarkAllParams {
+    #[serde(default)]
+    pub scope: ThreadReadStateScope,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadReadStateMarkAllResponse {
+    pub total_count: u32,
+    pub marked_count: u32,
+    pub already_read_count: u32,
+    /// Unix timestamp (in seconds) for the read marker written by the operation.
+    #[ts(type = "number")]
+    pub read_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSideSummaryCreateParams {
+    #[serde(default)]
+    pub scope: ThreadReadStateScope,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSideSummaryLatestParams {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSideSummaryEntry {
+    pub thread_id: String,
+    pub name: Option<String>,
+    pub preview: String,
+    pub summary: String,
+    pub status: ThreadStatus,
+    pub source: SessionSource,
+    pub thread_source: Option<ThreadSource>,
+    /// Unix timestamp (in seconds) when the thread was last updated.
+    #[ts(type = "number")]
+    pub updated_at: i64,
+    /// Whether this thread was unread before the summary action marked it read.
+    pub was_unread: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSideSummary {
+    pub id: String,
+    /// Unix timestamp (in seconds) when the summary was created.
+    #[ts(type = "number")]
+    pub created_at: i64,
+    /// Unix timestamp (in seconds) for the read marker written by the summary action.
+    #[ts(type = "number")]
+    pub read_at: i64,
+    pub scope: ThreadReadStateScope,
+    pub thread_count: u32,
+    pub unread_count: u32,
+    pub markdown: String,
+    pub entries: Vec<ThreadSideSummaryEntry>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSideSummaryCreateResponse {
+    pub summary: ThreadSideSummary,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSideSummaryLatestResponse {
+    pub summary: Option<ThreadSideSummary>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

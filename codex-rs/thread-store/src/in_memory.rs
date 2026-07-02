@@ -776,6 +776,8 @@ fn stored_thread_from_state(
         updated_at: metadata
             .and_then(|metadata| metadata.updated_at)
             .unwrap_or_else(Utc::now),
+        read_at: None,
+        has_unread: false,
         recency_at: metadata
             .and_then(|metadata| metadata.advance_recency_at.or(metadata.updated_at))
             .unwrap_or_else(Utc::now),

@@ -564,6 +564,7 @@ mod tests {
             rollout_path: PathBuf::from("/tmp/a.jsonl"),
             created_at,
             updated_at: created_at,
+            read_at: None,
             recency_at: created_at,
             source: "cli".to_string(),
             history_mode: Default::default(),

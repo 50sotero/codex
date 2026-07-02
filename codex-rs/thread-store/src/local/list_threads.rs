@@ -81,6 +81,8 @@ pub(super) async fn list_threads(
         .iter()
         .map(|thread| thread.thread_id)
         .collect::<HashSet<_>>();
+    let mut state_metadata =
+        HashMap::<ThreadId, codex_state::ThreadMetadata>::with_capacity(thread_ids.len());
     let mut names = HashMap::<ThreadId, String>::with_capacity(thread_ids.len());
     if let Some(state_db_ctx) = store.state_db().await {
         for &thread_id in &thread_ids {
@@ -90,6 +92,7 @@ pub(super) async fn list_threads(
             if let Some(title) = distinct_thread_metadata_title(&metadata) {
                 names.insert(thread_id, title);
             }
+            state_metadata.insert(thread_id, metadata);
         }
     }
     if names.len() < thread_ids.len()
@@ -103,6 +106,12 @@ pub(super) async fn list_threads(
     for thread in &mut items {
         if let Some(title) = names.get(&thread.thread_id).cloned() {
             set_thread_name_from_title(thread, title);
+        }
+        if let Some(metadata) = state_metadata.get(&thread.thread_id) {
+            thread.read_at = metadata.read_at;
+            thread.has_unread = metadata
+                .read_at
+                .is_none_or(|read_at| metadata.updated_at > read_at);
         }
     }
 

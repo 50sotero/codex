@@ -91,6 +91,7 @@ use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadMemoryModeSetParams;
 use codex_app_server_protocol::ThreadMetadataUpdateParams;
 use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadReadStateMarkAllParams;
 use codex_app_server_protocol::ThreadRealtimeAppendAudioParams;
 use codex_app_server_protocol::ThreadRealtimeAppendSpeechParams;
 use codex_app_server_protocol::ThreadRealtimeAppendTextParams;
@@ -103,6 +104,8 @@ use codex_app_server_protocol::ThreadSearchParams;
 use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::ThreadShellCommandParams;
+use codex_app_server_protocol::ThreadSideSummaryCreateParams;
+use codex_app_server_protocol::ThreadSideSummaryLatestParams;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadUnarchiveParams;
@@ -670,6 +673,33 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("thread/read", params).await
+    }
+
+    /// Send a `thread/readState/markAll` JSON-RPC request.
+    pub async fn send_thread_read_state_mark_all_request(
+        &mut self,
+        params: ThreadReadStateMarkAllParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/readState/markAll", params).await
+    }
+
+    /// Send a `thread/sideSummary/create` JSON-RPC request.
+    pub async fn send_thread_side_summary_create_request(
+        &mut self,
+        params: ThreadSideSummaryCreateParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/sideSummary/create", params).await
+    }
+
+    /// Send a `thread/sideSummary/latest` JSON-RPC request.
+    pub async fn send_thread_side_summary_latest_request(
+        &mut self,
+        params: ThreadSideSummaryLatestParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/sideSummary/latest", params).await
     }
 
     /// Send a `thread/turns/list` JSON-RPC request.

@@ -49,6 +49,7 @@ pub(super) fn test_thread_metadata(
         rollout_path: codex_home.join(format!("rollout-{thread_id}.jsonl")),
         created_at: now,
         updated_at: now,
+        read_at: None,
         recency_at: now,
         source: "cli".to_string(),
         history_mode: ThreadHistoryMode::Legacy,

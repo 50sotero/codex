@@ -372,6 +372,8 @@ async fn stored_thread_from_sqlite_metadata(
         reasoning_effort: metadata.reasoning_effort,
         created_at: metadata.created_at,
         updated_at: metadata.updated_at,
+        read_at: metadata.read_at,
+        has_unread: thread_has_unread(metadata.updated_at, metadata.read_at),
         recency_at: metadata.recency_at,
         archived_at: metadata.archived_at,
         cwd: metadata.cwd,
@@ -446,6 +448,8 @@ fn stored_thread_from_meta_line(
         reasoning_effort: None,
         created_at,
         updated_at,
+        read_at: None,
+        has_unread: false,
         recency_at: updated_at,
         archived_at: archived.then_some(updated_at),
         cwd: meta_line.meta.cwd,
@@ -463,6 +467,13 @@ fn stored_thread_from_meta_line(
         first_user_message: None,
         history: None,
     }
+}
+
+fn thread_has_unread(
+    updated_at: chrono::DateTime<chrono::Utc>,
+    read_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> bool {
+    read_at.is_none_or(|read_at| updated_at > read_at)
 }
 
 fn parse_session_source(source: &str) -> SessionSource {

@@ -14784,6 +14784,11 @@
           ],
           "description": "Optional Git metadata captured when the thread was created."
         },
+        "hasUnread": {
+          "default": false,
+          "description": "True when this thread has persisted updates newer than `readAt`.",
+          "type": "boolean"
+        },
         "id": {
           "description": "Identifier for this thread. Codex-generated thread IDs are UUIDv7.",
           "type": "string"
@@ -14816,6 +14821,15 @@
         "preview": {
           "description": "Usually the first user message in the thread, if available.",
           "type": "string"
+        },
+        "readAt": {
+          "default": null,
+          "description": "Unix timestamp (in seconds) for the last read high-water mark, if known.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "recencyAt": {
           "description": "Unix timestamp (in seconds) used for thread recency ordering.",
@@ -16468,6 +16482,61 @@
       "title": "ThreadReadResponse",
       "type": "object"
     },
+    "ThreadReadStateScope": {
+      "description": "Scope for read-state and side-summary operations.",
+      "properties": {
+        "archived": {
+          "description": "Optional archived filter; when true, matches archived threads instead of active threads.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadListCwdFilter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional cwd filter or filters."
+        },
+        "modelProviders": {
+          "description": "Optional provider filter; when omitted, defaults to the current provider. When present but empty, includes all providers.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "searchTerm": {
+          "description": "Optional substring filter for the extracted thread title or preview.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceKinds": {
+          "description": "Optional source filter; when omitted or empty, defaults to interactive sources.",
+          "items": {
+            "$ref": "#/definitions/ThreadSourceKind"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "useStateDbOnly": {
+          "description": "If true, read directly from the state DB without scanning JSONL rollouts to repair metadata.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "ThreadRealtimeAudioChunk": {
       "description": "EXPERIMENTAL - thread realtime audio chunk.",
       "properties": {
@@ -17109,6 +17178,110 @@
     "ThreadShellCommandResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "ThreadShellCommandResponse",
+      "type": "object"
+    },
+    "ThreadSideSummary": {
+      "properties": {
+        "createdAt": {
+          "description": "Unix timestamp (in seconds) when the summary was created.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/ThreadSideSummaryEntry"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "markdown": {
+          "type": "string"
+        },
+        "readAt": {
+          "description": "Unix timestamp (in seconds) for the read marker written by the summary action.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "scope": {
+          "$ref": "#/definitions/ThreadReadStateScope"
+        },
+        "threadCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "unreadCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "createdAt",
+        "entries",
+        "id",
+        "markdown",
+        "readAt",
+        "scope",
+        "threadCount",
+        "unreadCount"
+      ],
+      "type": "object"
+    },
+    "ThreadSideSummaryEntry": {
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "preview": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/SessionSource"
+        },
+        "status": {
+          "$ref": "#/definitions/ThreadStatus"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "threadSource": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updatedAt": {
+          "description": "Unix timestamp (in seconds) when the thread was last updated.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "wasUnread": {
+          "description": "Whether this thread was unread before the summary action marked it read.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "preview",
+        "source",
+        "status",
+        "summary",
+        "threadId",
+        "updatedAt",
+        "wasUnread"
+      ],
       "type": "object"
     },
     "ThreadSortKey": {

@@ -899,6 +899,8 @@ mod tests {
             model_provider: "mock-provider".to_string(),
             created_at: 0,
             updated_at: 0,
+            read_at: Some(0),
+            has_unread: false,
             recency_at: Some(0),
             status: ThreadStatus::NotLoaded,
             path: None,

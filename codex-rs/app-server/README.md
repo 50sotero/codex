@@ -141,9 +141,12 @@ Example with notification opt-out:
 - `thread/resume` — reopen an existing thread by id so subsequent `turn/start` calls append to it. Accepts the same permission override rules as `thread/start`.
 - `thread/fork` — fork an existing thread into a new thread id by copying the stored history; pass an optional `lastTurnId` to copy history only through that turn, inclusive, and drop later turns from the fork. An in-progress `lastTurnId` is rejected. If `lastTurnId` is null while the source thread is mid-turn, the fork records the same interruption marker as `turn/interrupt` instead of inheriting an unmarked partial turn suffix. The returned `thread.forkedFromId` points at the source thread when known. Accepts `ephemeral: true` for an in-memory temporary fork, emits `thread/started` (including the current `thread.status`), and auto-subscribes you to turn/item events for the new thread. Experimental clients can pass `excludeTurns: true` when they plan to page fork history via `thread/turns/list` instead of receiving the full turn array immediately. Accepts the same permission override rules as `thread/start`.
 - `thread/start`, `thread/resume`, and `thread/fork` responses include the legacy `sandbox` compatibility projection. `instructionSources` lists loaded instruction files using each source environment's native absolute path syntax, including files loaded from remote environments. Experimental clients can read `runtimeWorkspaceRoots` for the thread-scoped runtime roots and `activePermissionProfile` for the named or implicit built-in profile identity/provenance when known. Their deprecated experimental `multiAgentMode` field, and the corresponding thread setting, always report `explicitRequestOnly`; Ultra reasoning effort is the source of proactive multi-agent behavior.
-- `thread/list` — page through stored threads; supports cursor-based pagination and optional `modelProviders`, `sourceKinds`, `archived`, `cwd`, and `searchTerm` filters. Experimental clients can use `parentThreadId` for direct spawned children or `ancestorThreadId` for spawned descendants at any depth; the two filters are mutually exclusive. Review and Guardian threads are not included because they do not participate in that spawn-edge lifecycle. Each returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded. Subagent threads also include `parentThreadId` when the immediate parent is known.
+- `thread/list` — page through stored threads; supports cursor-based pagination and optional `modelProviders`, `sourceKinds`, `archived`, `cwd`, and `searchTerm` filters. Experimental clients can use `parentThreadId` for direct spawned children or `ancestorThreadId` for spawned descendants at any depth; the two filters are mutually exclusive. Review and Guardian threads are not included because they do not participate in that spawn-edge lifecycle. Each returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded, plus `readAt` and `hasUnread` for local read-state UI. Subagent threads also include `parentThreadId` when the immediate parent is known.
 - `thread/loaded/list` — list the thread ids currently loaded in memory.
 - `thread/read` — read a stored thread by id without resuming it; optionally include turns via `includeTurns`. The returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded.
+- `thread/readState/markAll` — experimental; mark every thread matching a `scope` as read. The scope supports the same provider, source, archived, cwd, search, and `useStateDbOnly` filters as `thread/list`, but has no cursor or limit.
+- `thread/sideSummary/create` — experimental; build a side-panel summary for every thread matching a `scope`, mark those threads read, persist the generated summary snapshot in sqlite, and return it.
+- `thread/sideSummary/latest` — experimental; return the latest persisted side-panel summary snapshot, if one exists.
 - `thread/turns/list` — experimental; page through a stored thread’s turn history without resuming it; supports cursor-based pagination with `sortDirection`, `itemsView`, `nextCursor`, and `backwardsCursor`.
 - `thread/items/list` — experimental; page through persisted thread items without resuming the thread. Pass `turnId` to restrict results to one turn, or omit it to page items across the thread. The active thread store must support item pagination.
 - `thread/metadata/update` — patch stored thread metadata in sqlite; currently supports updating persisted `gitInfo` fields and returns the refreshed `thread`.
@@ -403,6 +406,43 @@ Example:
 ```
 
 When `nextCursor` is `null`, you’ve reached the final page.
+
+### Example: Mark threads read and create a side summary
+
+Enable `capabilities.experimentalApi` during initialization, then call `thread/readState/markAll` to clear unread state for every thread matching a scope. The scope uses the same provider, source, archived, cwd, search, and `useStateDbOnly` filters as `thread/list`, but the operation applies to every matching thread rather than one page.
+
+```json
+{ "method": "thread/readState/markAll", "id": 21, "params": {
+    "scope": { "archived": false, "sourceKinds": ["cli", "vscode"] }
+} }
+{ "id": 21, "result": {
+    "totalCount": 12,
+    "markedCount": 4,
+    "alreadyReadCount": 8,
+    "readAt": 1730832222
+} }
+```
+
+Use `thread/sideSummary/create` when the UI should also render a side-panel digest. The server extracts the best stored completion signal for each matching thread, falls back to title/preview when no assistant result is stored, marks the matched threads read, saves the returned summary snapshot in sqlite, and returns the same payload.
+
+```json
+{ "method": "thread/sideSummary/create", "id": 22, "params": {
+    "scope": { "archived": false }
+} }
+{ "id": 22, "result": {
+    "summary": {
+        "id": "0196f2a9-9a4f-7000-8000-000000000000",
+        "threadCount": 2,
+        "unreadCount": 1,
+        "markdown": "Thread side summary\n2 thread(s); 1 unread before mark-read.\n\n- Fix tests (`thr_a` unread before mark-read): Updated failing assertions.",
+        "entries": [
+            { "threadId": "thr_a", "summary": "Updated failing assertions.", "wasUnread": true }
+        ]
+    }
+} }
+```
+
+Call `thread/sideSummary/latest` to recover the newest persisted summary snapshot.
 
 ### Example: List descendant threads
 

@@ -13,6 +13,7 @@ const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
 const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
     "thread/rollback is deprecated and will be removed soon";
 
+#[derive(Clone)]
 struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
     source_kinds: Option<Vec<ThreadSourceKind>>,
@@ -691,6 +692,33 @@ impl ThreadRequestProcessor {
         params: ThreadReadParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_read_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_read_state_mark_all(
+        &self,
+        params: ThreadReadStateMarkAllParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_read_state_mark_all_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_side_summary_create(
+        &self,
+        params: ThreadSideSummaryCreateParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_side_summary_create_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_side_summary_latest(
+        &self,
+        params: ThreadSideSummaryLatestParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_side_summary_latest_response_inner(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -2197,6 +2225,75 @@ impl ThreadRequestProcessor {
         Ok(ThreadReadResponse { thread })
     }
 
+    async fn thread_read_state_mark_all_response_inner(
+        &self,
+        params: ThreadReadStateMarkAllParams,
+    ) -> Result<ThreadReadStateMarkAllResponse, JSONRPCErrorError> {
+        let ThreadReadStateMarkAllParams { scope } = params;
+        let stored_threads = self.list_all_threads_for_read_scope(&scope).await?;
+        let outcome = self.mark_stored_threads_read(&stored_threads).await?;
+        Ok(ThreadReadStateMarkAllResponse {
+            total_count: saturating_u32(outcome.total_count),
+            marked_count: saturating_u32(outcome.marked_count),
+            already_read_count: saturating_u32(outcome.already_read_count),
+            read_at: outcome.read_at.timestamp(),
+        })
+    }
+
+    async fn thread_side_summary_create_response_inner(
+        &self,
+        params: ThreadSideSummaryCreateParams,
+    ) -> Result<ThreadSideSummaryCreateResponse, JSONRPCErrorError> {
+        let ThreadSideSummaryCreateParams { scope } = params;
+        let stored_threads = self.list_all_threads_for_read_scope(&scope).await?;
+        let outcome = self.mark_stored_threads_read(&stored_threads).await?;
+        let summary = self
+            .build_thread_side_summary(scope, stored_threads, &outcome)
+            .await?;
+        let record = codex_state::ThreadSideSummaryRecord {
+            id: summary.id.clone(),
+            created_at: chrono::DateTime::<chrono::Utc>::from_timestamp(summary.created_at, 0)
+                .unwrap_or_else(chrono::Utc::now),
+            read_at: outcome.read_at,
+            scope_json: serde_json::to_string(&summary.scope).map_err(|err| {
+                internal_error(format!("failed to serialize summary scope: {err}"))
+            })?,
+            thread_count: summary.thread_count as usize,
+            unread_count: summary.unread_count as usize,
+            summary_json: serde_json::to_string(&summary)
+                .map_err(|err| internal_error(format!("failed to serialize summary: {err}")))?,
+            summary_markdown: summary.markdown.clone(),
+        };
+        self.state_db_for_read_state()?
+            .store_thread_side_summary(&record)
+            .await
+            .map_err(|err| internal_error(format!("failed to store thread side summary: {err}")))?;
+        Ok(ThreadSideSummaryCreateResponse { summary })
+    }
+
+    async fn thread_side_summary_latest_response_inner(
+        &self,
+        params: ThreadSideSummaryLatestParams,
+    ) -> Result<ThreadSideSummaryLatestResponse, JSONRPCErrorError> {
+        let ThreadSideSummaryLatestParams {} = params;
+        let summary = self
+            .state_db_for_read_state()?
+            .latest_thread_side_summary()
+            .await
+            .map_err(|err| {
+                internal_error(format!("failed to read latest thread side summary: {err}"))
+            })?
+            .map(|record| {
+                serde_json::from_str::<ThreadSideSummary>(&record.summary_json).map_err(|err| {
+                    internal_error(format!(
+                        "failed to deserialize latest thread side summary: {err}"
+                    ))
+                })
+            })
+            .transpose()?;
+        Ok(ThreadSideSummaryLatestResponse { summary })
+    }
+
     /// Builds the API view for `thread/read` from persisted metadata plus optional live state.
     async fn read_thread_view(
         &self,
@@ -3699,6 +3796,143 @@ impl ThreadRequestProcessor {
         Ok(GetConversationSummaryResponse { summary })
     }
 
+    fn read_scope_filters(
+        &self,
+        scope: &ThreadReadStateScope,
+    ) -> Result<ThreadListFilters, JSONRPCErrorError> {
+        let cwd_filters = normalize_thread_list_cwd_filters(scope.cwd.clone())?;
+        Ok(ThreadListFilters {
+            model_providers: scope.model_providers.clone(),
+            source_kinds: scope.source_kinds.clone(),
+            archived: scope.archived.unwrap_or(false),
+            cwd_filters,
+            search_term: scope.search_term.clone(),
+            use_state_db_only: scope.use_state_db_only,
+            relation_filter: None,
+        })
+    }
+
+    async fn list_all_threads_for_read_scope(
+        &self,
+        scope: &ThreadReadStateScope,
+    ) -> Result<Vec<StoredThread>, JSONRPCErrorError> {
+        let filters = self.read_scope_filters(scope)?;
+        let mut cursor = None;
+        let mut last_cursor = None;
+        let mut threads = Vec::new();
+
+        loop {
+            let (page, next_cursor) = self
+                .list_threads_common(
+                    THREAD_LIST_MAX_LIMIT,
+                    cursor.clone(),
+                    StoreThreadSortKey::RecencyAt,
+                    SortDirection::Desc,
+                    filters.clone(),
+                )
+                .await?;
+            threads.extend(page);
+
+            let Some(next_cursor_value) = next_cursor else {
+                break;
+            };
+            if last_cursor.as_ref() == Some(&next_cursor_value) {
+                break;
+            }
+            last_cursor = Some(next_cursor_value.clone());
+            cursor = Some(next_cursor_value);
+        }
+
+        Ok(threads)
+    }
+
+    fn state_db_for_read_state(&self) -> Result<&StateDbHandle, JSONRPCErrorError> {
+        self.state_db
+            .as_ref()
+            .ok_or_else(|| unsupported_thread_store_operation("thread read-state persistence"))
+    }
+
+    async fn mark_stored_threads_read(
+        &self,
+        stored_threads: &[StoredThread],
+    ) -> Result<codex_state::ThreadReadStateMarkAllOutcome, JSONRPCErrorError> {
+        let thread_ids = stored_threads
+            .iter()
+            .map(|thread| thread.thread_id)
+            .collect::<Vec<_>>();
+        self.state_db_for_read_state()?
+            .mark_thread_ids_read(&thread_ids)
+            .await
+            .map_err(|err| internal_error(format!("failed to mark threads read: {err}")))
+    }
+
+    async fn build_thread_side_summary(
+        &self,
+        scope: ThreadReadStateScope,
+        stored_threads: Vec<StoredThread>,
+        outcome: &codex_state::ThreadReadStateMarkAllOutcome,
+    ) -> Result<ThreadSideSummary, JSONRPCErrorError> {
+        let created_at = chrono::Utc::now();
+        let status_ids = stored_threads
+            .iter()
+            .map(|thread| thread.thread_id.to_string())
+            .collect::<Vec<_>>();
+        let statuses = self
+            .thread_watch_manager
+            .loaded_statuses_for_threads(status_ids)
+            .await;
+        let fallback_provider = self.config.model_provider_id.clone();
+        let mut entries = Vec::with_capacity(stored_threads.len());
+
+        for stored_thread in stored_threads {
+            let was_unread = stored_thread.has_unread;
+            let thread_id = stored_thread.thread_id;
+            let (mut thread, _) = thread_from_stored_thread(
+                stored_thread,
+                fallback_provider.as_str(),
+                &self.config.cwd,
+            );
+            if let Some(status) = statuses.get(&thread.id) {
+                thread.status = status.clone();
+            }
+            let summary = self.thread_done_summary(thread_id, &thread).await;
+            entries.push(ThreadSideSummaryEntry {
+                thread_id: thread.id,
+                name: thread.name,
+                preview: thread.preview,
+                summary,
+                status: thread.status,
+                source: thread.source,
+                thread_source: thread.thread_source,
+                updated_at: thread.updated_at,
+                was_unread,
+            });
+        }
+
+        let markdown = build_thread_side_summary_markdown(&entries, outcome);
+        Ok(ThreadSideSummary {
+            id: Uuid::now_v7().to_string(),
+            created_at: created_at.timestamp(),
+            read_at: outcome.read_at.timestamp(),
+            scope,
+            thread_count: saturating_u32(entries.len()),
+            unread_count: saturating_u32(outcome.marked_count),
+            markdown,
+            entries,
+        })
+    }
+
+    async fn thread_done_summary(&self, thread_id: ThreadId, fallback: &Thread) -> String {
+        if let Ok(Some(thread)) = self
+            .load_persisted_thread_for_read(thread_id, /*include_turns*/ true)
+            .await
+            && let Some(summary) = thread_done_summary_from_turns(&thread)
+        {
+            return summary;
+        }
+        fallback_thread_summary(fallback)
+    }
+
     async fn list_threads_common(
         &self,
         requested_page_size: usize,
@@ -3845,6 +4079,142 @@ fn thread_backwards_cursor_for_sort_key(
         SortDirection::Desc => timestamp.checked_sub_signed(ChronoDuration::milliseconds(1))?,
     };
     Some(timestamp.to_rfc3339_opts(SecondsFormat::Millis, true))
+}
+
+fn saturating_u32(value: usize) -> u32 {
+    value.min(u32::MAX as usize) as u32
+}
+
+fn thread_done_summary_from_turns(thread: &Thread) -> Option<String> {
+    for turn in thread.turns.iter().rev() {
+        for item in turn.items.iter().rev() {
+            match item {
+                ThreadItem::AgentMessage { text, .. } => {
+                    if let Some(summary) = compact_text(text, 280) {
+                        return Some(summary);
+                    }
+                }
+                ThreadItem::FileChange {
+                    changes, status, ..
+                } => {
+                    return Some(format!(
+                        "Recorded file changes with status {status:?} across {} path(s).",
+                        changes.len()
+                    ));
+                }
+                ThreadItem::CommandExecution {
+                    command,
+                    status,
+                    exit_code,
+                    ..
+                } => {
+                    let command =
+                        compact_text(command, 120).unwrap_or_else(|| "command".to_string());
+                    return Some(format!(
+                        "Ran `{}` with status {status:?} and exit code {}.",
+                        command.replace('`', "'"),
+                        exit_code
+                            .map(|code| code.to_string())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    ));
+                }
+                ThreadItem::McpToolCall {
+                    server,
+                    tool,
+                    status,
+                    ..
+                } => {
+                    return Some(format!(
+                        "Called MCP tool `{server}/{tool}` with status {status:?}."
+                    ));
+                }
+                ThreadItem::DynamicToolCall {
+                    namespace,
+                    tool,
+                    status,
+                    ..
+                } => {
+                    let tool_name = namespace
+                        .as_deref()
+                        .map(|namespace| format!("{namespace}/{tool}"))
+                        .unwrap_or_else(|| tool.clone());
+                    return Some(format!(
+                        "Called dynamic tool `{}` with status {status:?}.",
+                        tool_name.replace('`', "'")
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+fn fallback_thread_summary(thread: &Thread) -> String {
+    if let Some(preview) = compact_text(&thread.preview, 240) {
+        return format!("No completed assistant response recorded; latest preview: {preview}");
+    }
+    if let Some(name) = thread
+        .name
+        .as_deref()
+        .and_then(|name| compact_text(name, 240))
+    {
+        return format!("No completed assistant response recorded; named thread: {name}");
+    }
+    "No completed assistant response recorded.".to_string()
+}
+
+fn compact_text(text: &str, max_chars: usize) -> Option<String> {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return None;
+    }
+    if compact.chars().count() <= max_chars {
+        return Some(compact);
+    }
+    let mut truncated = compact
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    truncated.push_str("...");
+    Some(truncated)
+}
+
+fn build_thread_side_summary_markdown(
+    entries: &[ThreadSideSummaryEntry],
+    outcome: &codex_state::ThreadReadStateMarkAllOutcome,
+) -> String {
+    let mut lines = vec![
+        "Thread side summary".to_string(),
+        format!(
+            "{} thread(s); {} unread before mark-read.",
+            entries.len(),
+            outcome.marked_count
+        ),
+        String::new(),
+    ];
+
+    for entry in entries {
+        let title = entry
+            .name
+            .as_deref()
+            .and_then(|name| compact_text(name, 90))
+            .or_else(|| compact_text(&entry.preview, 90))
+            .unwrap_or_else(|| "Untitled thread".to_string());
+        let short_id = entry.thread_id.get(..8).unwrap_or(&entry.thread_id);
+        let unread = if entry.was_unread {
+            " unread before mark-read"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "- {} (`{short_id}`{unread}): {}",
+            title.replace('`', "'"),
+            entry.summary.replace('`', "'")
+        ));
+    }
+
+    lines.join("\n")
 }
 
 struct ThreadTurnsPage {
@@ -4283,6 +4653,8 @@ pub(crate) fn thread_from_stored_thread(
         },
         created_at: thread.created_at.timestamp(),
         updated_at: thread.updated_at.timestamp(),
+        read_at: thread.read_at.map(|read_at| read_at.timestamp()),
+        has_unread: thread.has_unread,
         recency_at: Some(thread.recency_at.timestamp()),
         status: ThreadStatus::NotLoaded,
         path,
@@ -4491,6 +4863,8 @@ fn build_thread_from_snapshot(
         model_provider: config_snapshot.model_provider_id.clone(),
         created_at: now,
         updated_at: now,
+        read_at: Some(now),
+        has_unread: false,
         recency_at: Some(now),
         status: ThreadStatus::NotLoaded,
         path,

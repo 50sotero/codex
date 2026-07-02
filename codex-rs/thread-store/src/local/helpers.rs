@@ -137,6 +137,8 @@ pub(super) fn stored_thread_from_rollout_item(
         reasoning_effort: None,
         created_at,
         updated_at,
+        read_at: None,
+        has_unread: false,
         recency_at,
         archived_at,
         cwd: item.cwd.unwrap_or_default(),

@@ -437,6 +437,10 @@ pub struct StoredThread {
     pub created_at: DateTime<Utc>,
     /// Thread last-update timestamp.
     pub updated_at: DateTime<Utc>,
+    /// Last read high-water mark for this thread, if one has been recorded.
+    pub read_at: Option<DateTime<Utc>>,
+    /// Whether persisted state says this thread has updates newer than `read_at`.
+    pub has_unread: bool,
     /// Thread product-recency timestamp.
     pub recency_at: DateTime<Utc>,
     /// Thread archive timestamp, if archived.

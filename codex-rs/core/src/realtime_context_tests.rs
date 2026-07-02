@@ -47,6 +47,12 @@ fn stored_thread(cwd: &str, title: &str, first_user_message: &str) -> StoredThre
             .timestamp_opt(1_709_251_200, 0)
             .single()
             .expect("valid timestamp"),
+        read_at: Some(
+            Utc.timestamp_opt(1_709_251_200, 0)
+                .single()
+                .expect("valid timestamp"),
+        ),
+        has_unread: false,
         recency_at: Utc
             .timestamp_opt(1_709_251_200, 0)
             .single()

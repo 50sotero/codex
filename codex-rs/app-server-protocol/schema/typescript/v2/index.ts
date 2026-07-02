@@ -426,6 +426,7 @@ export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateRespons
 export type { ThreadNameUpdatedNotification } from "./ThreadNameUpdatedNotification";
 export type { ThreadReadParams } from "./ThreadReadParams";
 export type { ThreadReadResponse } from "./ThreadReadResponse";
+export type { ThreadReadStateScope } from "./ThreadReadStateScope";
 export type { ThreadRealtimeAudioChunk } from "./ThreadRealtimeAudioChunk";
 export type { ThreadRealtimeClosedNotification } from "./ThreadRealtimeClosedNotification";
 export type { ThreadRealtimeErrorNotification } from "./ThreadRealtimeErrorNotification";
@@ -448,6 +449,8 @@ export type { ThreadSettings } from "./ThreadSettings";
 export type { ThreadSettingsUpdatedNotification } from "./ThreadSettingsUpdatedNotification";
 export type { ThreadShellCommandParams } from "./ThreadShellCommandParams";
 export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";
+export type { ThreadSideSummary } from "./ThreadSideSummary";
+export type { ThreadSideSummaryEntry } from "./ThreadSideSummaryEntry";
 export type { ThreadSortKey } from "./ThreadSortKey";
 export type { ThreadSource } from "./ThreadSource";
 export type { ThreadSourceKind } from "./ThreadSourceKind";

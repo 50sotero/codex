@@ -62,6 +62,40 @@ pub struct ThreadsPage {
     pub num_scanned_rows: usize,
 }
 
+/// Outcome of marking a set of threads as read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadReadStateMarkAllOutcome {
+    /// Existing threads matched by the operation.
+    pub total_count: usize,
+    /// Threads that were unread before the operation.
+    pub marked_count: usize,
+    /// Threads that were already read before the operation.
+    pub already_read_count: usize,
+    /// Read marker timestamp written by the operation.
+    pub read_at: DateTime<Utc>,
+}
+
+/// Persisted snapshot for a side-panel summary over a set of threads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadSideSummaryRecord {
+    /// Stable summary id.
+    pub id: String,
+    /// Summary creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Read marker timestamp applied as part of the summary action.
+    pub read_at: DateTime<Utc>,
+    /// JSON encoded summary scope.
+    pub scope_json: String,
+    /// Number of threads represented in this summary.
+    pub thread_count: usize,
+    /// Number of represented threads that were unread before the summary action.
+    pub unread_count: usize,
+    /// JSON encoded public summary payload.
+    pub summary_json: String,
+    /// Markdown rendering of the summary payload.
+    pub summary_markdown: String,
+}
+
 /// The outcome of extracting metadata from a rollout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractionOutcome {
@@ -84,6 +118,8 @@ pub struct ThreadMetadata {
     pub created_at: DateTime<Utc>,
     /// The last update timestamp.
     pub updated_at: DateTime<Utc>,
+    /// Last read high-water mark for this thread, if one has been recorded.
+    pub read_at: Option<DateTime<Utc>>,
     /// The product recency timestamp.
     pub recency_at: DateTime<Utc>,
     /// The session source (stringified enum).
@@ -226,6 +262,7 @@ impl ThreadMetadataBuilder {
             rollout_path: self.rollout_path.clone(),
             created_at,
             updated_at,
+            read_at: None,
             recency_at,
             source,
             history_mode: self.history_mode,
@@ -373,6 +410,7 @@ pub(crate) struct ThreadRow {
     rollout_path: String,
     created_at: i64,
     updated_at: i64,
+    read_at: i64,
     recency_at: i64,
     source: String,
     history_mode: String,
@@ -404,6 +442,7 @@ impl ThreadRow {
             rollout_path: row.try_get("rollout_path")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
+            read_at: row.try_get("read_at")?,
             recency_at: row.try_get("recency_at")?,
             source: row.try_get("source")?,
             history_mode: row.try_get("history_mode")?,
@@ -439,6 +478,7 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             rollout_path,
             created_at,
             updated_at,
+            read_at,
             recency_at,
             source,
             history_mode,
@@ -472,6 +512,9 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             rollout_path: PathBuf::from(rollout_path),
             created_at: epoch_millis_to_datetime(created_at)?,
             updated_at: epoch_millis_to_datetime(updated_at)?,
+            read_at: (read_at > 0)
+                .then(|| epoch_millis_to_datetime(read_at))
+                .transpose()?,
             recency_at: epoch_millis_to_datetime(recency_at)?,
             source,
             history_mode,
@@ -570,6 +613,7 @@ mod tests {
             rollout_path: "/tmp/rollout-123.jsonl".to_string(),
             created_at: 1_700_000_000,
             updated_at: 1_700_000_100,
+            read_at: 0,
             recency_at: 1_700_000_100,
             source: "cli".to_string(),
             history_mode: "legacy".to_string(),
@@ -602,6 +646,7 @@ mod tests {
             rollout_path: PathBuf::from("/tmp/rollout-123.jsonl"),
             created_at: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).expect("timestamp"),
             updated_at: DateTime::<Utc>::from_timestamp(1_700_000_100, 0).expect("timestamp"),
+            read_at: None,
             recency_at: DateTime::<Utc>::from_timestamp(1_700_000_100, 0).expect("timestamp"),
             source: "cli".to_string(),
             history_mode: ThreadHistoryMode::Legacy,

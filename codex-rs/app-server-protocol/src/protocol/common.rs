@@ -634,6 +634,24 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadReadResponse,
     },
+    #[experimental("thread/readState/markAll")]
+    ThreadReadStateMarkAll => "thread/readState/markAll" {
+        params: v2::ThreadReadStateMarkAllParams,
+        serialization: None,
+        response: v2::ThreadReadStateMarkAllResponse,
+    },
+    #[experimental("thread/sideSummary/create")]
+    ThreadSideSummaryCreate => "thread/sideSummary/create" {
+        params: v2::ThreadSideSummaryCreateParams,
+        serialization: None,
+        response: v2::ThreadSideSummaryCreateResponse,
+    },
+    #[experimental("thread/sideSummary/latest")]
+    ThreadSideSummaryLatest => "thread/sideSummary/latest" {
+        params: v2::ThreadSideSummaryLatestParams,
+        serialization: None,
+        response: v2::ThreadSideSummaryLatestResponse,
+    },
     #[experimental("thread/turns/list")]
     ThreadTurnsList => "thread/turns/list" {
         params: v2::ThreadTurnsListParams,
@@ -2591,6 +2609,8 @@ mod tests {
                     model_provider: "openai".to_string(),
                     created_at: 1,
                     updated_at: 2,
+                    read_at: Some(2),
+                    has_unread: false,
                     recency_at: Some(3),
                     status: v2::ThreadStatus::Idle,
                     path: None,

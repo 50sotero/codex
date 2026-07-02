@@ -3980,6 +3980,61 @@
       ],
       "type": "object"
     },
+    "ThreadReadStateScope": {
+      "description": "Scope for read-state and side-summary operations.",
+      "properties": {
+        "archived": {
+          "description": "Optional archived filter; when true, matches archived threads instead of active threads.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadListCwdFilter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional cwd filter or filters."
+        },
+        "modelProviders": {
+          "description": "Optional provider filter; when omitted, defaults to the current provider. When present but empty, includes all providers.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "searchTerm": {
+          "description": "Optional substring filter for the extracted thread title or preview.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceKinds": {
+          "description": "Optional source filter; when omitted or empty, defaults to interactive sources.",
+          "items": {
+            "$ref": "#/definitions/ThreadSourceKind"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "useStateDbOnly": {
+          "description": "If true, read directly from the state DB without scanning JSONL rollouts to repair metadata.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "ThreadRealtimeAudioChunk": {
       "description": "EXPERIMENTAL - thread realtime audio chunk.",
       "properties": {

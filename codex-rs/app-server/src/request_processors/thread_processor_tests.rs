@@ -478,6 +478,8 @@ mod thread_processor_behavior_tests {
             reasoning_effort: None,
             created_at: created_at.with_timezone(&Utc),
             updated_at: updated_at.with_timezone(&Utc),
+            read_at: Some(updated_at.with_timezone(&Utc)),
+            has_unread: false,
             recency_at: updated_at.with_timezone(&Utc),
             archived_at: None,
             cwd: PathBuf::from("/tmp"),

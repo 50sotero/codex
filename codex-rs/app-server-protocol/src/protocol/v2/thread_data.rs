@@ -195,6 +195,13 @@ pub struct Thread {
     /// Unix timestamp (in seconds) when the thread was last updated.
     #[ts(type = "number")]
     pub updated_at: i64,
+    /// Unix timestamp (in seconds) for the last read high-water mark, if known.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub read_at: Option<i64>,
+    /// True when this thread has persisted updates newer than `readAt`.
+    #[serde(default)]
+    pub has_unread: bool,
     /// Unix timestamp (in seconds) used for thread recency ordering.
     #[ts(type = "number | null")]
     pub recency_at: Option<i64>,

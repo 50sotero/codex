@@ -2282,6 +2282,8 @@ mod tests {
             reasoning_effort: None,
             created_at,
             updated_at: created_at,
+            read_at: Some(created_at),
+            has_unread: false,
             recency_at: created_at,
             archived_at: None,
             cwd: test_path_buf("/tmp").abs().into(),

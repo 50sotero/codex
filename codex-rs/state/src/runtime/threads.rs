@@ -1,8 +1,12 @@
 use super::*;
 use crate::SortDirection;
 use codex_protocol::protocol::SessionSource;
+use sqlx::sqlite::SqliteRow;
+use std::collections::BTreeSet;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
+
+const READ_MARK_CHUNK_SIZE: usize = 500;
 
 impl StateRuntime {
     pub async fn get_thread(&self, id: ThreadId) -> anyhow::Result<Option<crate::ThreadMetadata>> {
@@ -13,6 +17,7 @@ SELECT
     threads.rollout_path,
     threads.created_at_ms AS created_at,
     threads.updated_at_ms AS updated_at,
+    threads.read_at_ms AS read_at,
     threads.recency_at_ms AS recency_at,
     threads.source,
     threads.history_mode,
@@ -687,6 +692,120 @@ WHERE id = ?
         Ok(result.rows_affected() > 0)
     }
 
+    /// Mark the provided thread ids as read.
+    ///
+    /// The read marker is a high-water mark: a thread is unread whenever
+    /// `updated_at_ms > read_at_ms`. The write advances each matched row to at
+    /// least its current update timestamp, so future updates naturally make the
+    /// thread unread again.
+    pub async fn mark_thread_ids_read(
+        &self,
+        thread_ids: &[ThreadId],
+    ) -> anyhow::Result<crate::ThreadReadStateMarkAllOutcome> {
+        let read_at = Utc::now();
+        let read_at_ms = datetime_to_epoch_millis(read_at);
+        let ids = dedup_thread_ids(thread_ids);
+        if ids.is_empty() {
+            return Ok(crate::ThreadReadStateMarkAllOutcome {
+                total_count: 0,
+                marked_count: 0,
+                already_read_count: 0,
+                read_at,
+            });
+        }
+
+        let mut total_count = 0usize;
+        let mut unread_count = 0usize;
+        for chunk in ids.chunks(READ_MARK_CHUNK_SIZE) {
+            let mut builder = QueryBuilder::<Sqlite>::new(
+                r#"
+SELECT
+    COUNT(*) AS total_count,
+    SUM(CASE WHEN updated_at_ms > read_at_ms THEN 1 ELSE 0 END) AS unread_count
+FROM threads
+"#,
+            );
+            push_id_filter(&mut builder, chunk);
+            let row = builder.build().fetch_one(self.pool.as_ref()).await?;
+            let chunk_total: i64 = row.try_get("total_count")?;
+            let chunk_unread: Option<i64> = row.try_get("unread_count")?;
+            total_count = total_count.saturating_add(chunk_total.max(0) as usize);
+            unread_count = unread_count.saturating_add(chunk_unread.unwrap_or(0).max(0) as usize);
+
+            let mut update = QueryBuilder::<Sqlite>::new(
+                "UPDATE threads SET read_at_ms = MAX(read_at_ms, updated_at_ms, ",
+            );
+            update.push_bind(read_at_ms);
+            update.push(")");
+            push_id_filter(&mut update, chunk);
+            update.build().execute(self.pool.as_ref()).await?;
+        }
+
+        Ok(crate::ThreadReadStateMarkAllOutcome {
+            total_count,
+            marked_count: unread_count,
+            already_read_count: total_count.saturating_sub(unread_count),
+            read_at,
+        })
+    }
+
+    /// Persist an append-only side summary snapshot.
+    pub async fn store_thread_side_summary(
+        &self,
+        record: &crate::ThreadSideSummaryRecord,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+INSERT INTO thread_side_summaries (
+    id,
+    created_at_ms,
+    read_at_ms,
+    scope_json,
+    thread_count,
+    unread_count,
+    summary_json,
+    summary_markdown
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+"#,
+        )
+        .bind(record.id.as_str())
+        .bind(datetime_to_epoch_millis(record.created_at))
+        .bind(datetime_to_epoch_millis(record.read_at))
+        .bind(record.scope_json.as_str())
+        .bind(record.thread_count as i64)
+        .bind(record.unread_count as i64)
+        .bind(record.summary_json.as_str())
+        .bind(record.summary_markdown.as_str())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(())
+    }
+
+    /// Read the newest persisted side summary snapshot.
+    pub async fn latest_thread_side_summary(
+        &self,
+    ) -> anyhow::Result<Option<crate::ThreadSideSummaryRecord>> {
+        let row = sqlx::query(
+            r#"
+SELECT
+    id,
+    created_at_ms,
+    read_at_ms,
+    scope_json,
+    thread_count,
+    unread_count,
+    summary_json,
+    summary_markdown
+FROM thread_side_summaries
+ORDER BY created_at_ms DESC, id DESC
+LIMIT 1
+"#,
+        )
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        row.map(thread_side_summary_record_from_row).transpose()
+    }
+
     /// Allocate a persisted `updated_at` value for thread-list cursor ordering.
     ///
     /// We keep a process-local high-water mark so hot rollout writes can get unique,
@@ -706,6 +825,39 @@ WHERE id = ?
     ) -> anyhow::Result<DateTime<Utc>> {
         allocate_thread_timestamp(self.thread_recency_at_millis.as_ref(), recency_at)
     }
+}
+
+fn dedup_thread_ids(thread_ids: &[ThreadId]) -> Vec<String> {
+    thread_ids
+        .iter()
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn push_id_filter(builder: &mut QueryBuilder<Sqlite>, thread_ids: &[String]) {
+    builder.push(" WHERE id IN (");
+    let mut separated = builder.separated(", ");
+    for thread_id in thread_ids {
+        separated.push_bind(thread_id);
+    }
+    separated.push_unseparated(")");
+}
+
+fn thread_side_summary_record_from_row(
+    row: SqliteRow,
+) -> anyhow::Result<crate::ThreadSideSummaryRecord> {
+    Ok(crate::ThreadSideSummaryRecord {
+        id: row.try_get("id")?,
+        created_at: epoch_millis_to_datetime(row.try_get("created_at_ms")?)?,
+        read_at: epoch_millis_to_datetime(row.try_get("read_at_ms")?)?,
+        scope_json: row.try_get("scope_json")?,
+        thread_count: row.try_get::<i64, _>("thread_count")?.max(0) as usize,
+        unread_count: row.try_get::<i64, _>("unread_count")?.max(0) as usize,
+        summary_json: row.try_get("summary_json")?,
+        summary_markdown: row.try_get("summary_markdown")?,
+    })
 }
 
 fn allocate_thread_timestamp(
@@ -1210,6 +1362,7 @@ SELECT
     threads.rollout_path,
     threads.created_at_ms AS created_at,
     threads.updated_at_ms AS updated_at,
+    threads.read_at_ms AS read_at,
     threads.recency_at_ms AS recency_at,
     threads.source,
     threads.history_mode,
@@ -3079,5 +3232,99 @@ INSERT INTO thread_spawn_edges (
                 future_child_thread_id,
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn mark_thread_ids_read_clears_unread_state_without_touching_updates() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let cwd = PathBuf::from("/tmp/project");
+        let thread_id =
+            ThreadId::from_string("00000000-0000-7000-8000-000000000111").expect("valid id");
+        let mut metadata = test_thread_metadata(&codex_home, thread_id, cwd);
+        metadata.updated_at = DateTime::<Utc>::from_timestamp(1_700_000_010, 0).expect("timestamp");
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("insert thread");
+
+        let inserted = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("get thread")
+            .expect("thread");
+        assert_eq!(inserted.read_at, None);
+
+        let outcome = runtime
+            .mark_thread_ids_read(&[thread_id])
+            .await
+            .expect("mark read");
+        assert_eq!(outcome.total_count, 1);
+        assert_eq!(outcome.marked_count, 1);
+        assert_eq!(outcome.already_read_count, 0);
+
+        let read = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("get thread")
+            .expect("thread");
+        assert_eq!(read.updated_at, metadata.updated_at);
+        assert!(read.read_at.expect("read marker") >= metadata.updated_at);
+
+        let second = runtime
+            .mark_thread_ids_read(&[thread_id])
+            .await
+            .expect("mark read again");
+        assert_eq!(second.total_count, 1);
+        assert_eq!(second.marked_count, 0);
+        assert_eq!(second.already_read_count, 1);
+    }
+
+    #[tokio::test]
+    async fn stores_and_reads_latest_thread_side_summary() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home, "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let first = crate::ThreadSideSummaryRecord {
+            id: "summary-first".to_string(),
+            created_at: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).expect("timestamp"),
+            read_at: DateTime::<Utc>::from_timestamp(1_700_000_001, 0).expect("timestamp"),
+            scope_json: "{\"archived\":false}".to_string(),
+            thread_count: 1,
+            unread_count: 1,
+            summary_json: "{\"id\":\"summary-first\"}".to_string(),
+            summary_markdown: "- First".to_string(),
+        };
+        let second = crate::ThreadSideSummaryRecord {
+            id: "summary-second".to_string(),
+            created_at: DateTime::<Utc>::from_timestamp(1_700_000_010, 0).expect("timestamp"),
+            read_at: DateTime::<Utc>::from_timestamp(1_700_000_011, 0).expect("timestamp"),
+            scope_json: "{\"archived\":false}".to_string(),
+            thread_count: 2,
+            unread_count: 0,
+            summary_json: "{\"id\":\"summary-second\"}".to_string(),
+            summary_markdown: "- Second".to_string(),
+        };
+
+        runtime
+            .store_thread_side_summary(&first)
+            .await
+            .expect("store first summary");
+        runtime
+            .store_thread_side_summary(&second)
+            .await
+            .expect("store second summary");
+
+        let latest = runtime
+            .latest_thread_side_summary()
+            .await
+            .expect("latest summary")
+            .expect("summary");
+        assert_eq!(latest.id, "summary-second");
+        assert_eq!(latest.thread_count, 2);
+        assert_eq!(latest.summary_markdown, "- Second");
     }
 }
