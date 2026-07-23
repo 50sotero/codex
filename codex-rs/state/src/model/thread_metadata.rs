@@ -523,15 +523,19 @@ pub(crate) fn datetime_to_epoch_seconds(dt: DateTime<Utc>) -> i64 {
     dt.timestamp()
 }
 
-pub(crate) fn epoch_millis_to_datetime(value: i64) -> Result<DateTime<Utc>> {
+pub(crate) fn normalize_epoch_millis(value: i64) -> i64 {
     // Values older than 2020 if interpreted as milliseconds are legacy second-precision rows.
-    // Convert them in memory so old state DBs keep ordering correctly after new writes use ms.
+    // Normalize them once so newly persisted timestamp fields always have strict-ms semantics.
     const MIN_EPOCH_MILLIS: i64 = 1_577_836_800_000;
-    let millis = if value < MIN_EPOCH_MILLIS {
+    if value < MIN_EPOCH_MILLIS {
         value.saturating_mul(1000)
     } else {
         value
-    };
+    }
+}
+
+pub(crate) fn epoch_millis_to_datetime(value: i64) -> Result<DateTime<Utc>> {
+    let millis = normalize_epoch_millis(value);
     DateTime::<Utc>::from_timestamp_millis(millis)
         .ok_or_else(|| anyhow::anyhow!("invalid unix timestamp millis: {value}"))
 }

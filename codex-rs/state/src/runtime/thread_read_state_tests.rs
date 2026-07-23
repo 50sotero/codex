@@ -150,65 +150,128 @@ async fn zero_sentinel_is_counted_as_unread_at_the_unix_epoch() {
 }
 
 #[tokio::test]
-async fn preallocated_update_that_commits_after_marking_remains_unread() {
+async fn legacy_second_precision_markers_are_normalized_and_old_writer_updates_reset_them() {
     let codex_home = unique_temp_dir();
     let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
         .await
         .expect("state db should initialize");
     let thread_id =
-        ThreadId::from_string("00000000-0000-7000-8000-000000000121").expect("valid thread id");
+        ThreadId::from_string("00000000-0000-7000-8000-000000000116").expect("valid thread id");
     let metadata = test_thread_metadata(&codex_home, thread_id, PathBuf::from("/tmp/project"));
     runtime
         .upsert_thread(&metadata)
         .await
         .expect("thread should insert");
-
-    let concurrent_update = metadata.updated_at + chrono::Duration::milliseconds(1);
-    let (snapshot_sender, snapshot_receiver) = oneshot::channel();
-    let mark_runtime = runtime.clone();
-    let mark_task = tokio::spawn(async move {
-        mark_runtime
-            .mark_thread_ids_read_inner(&[thread_id], Some(snapshot_sender))
-            .await
-    });
-    tokio::time::timeout(Duration::from_secs(2), snapshot_receiver)
+    let legacy_seconds = 1_700_000_000_i64;
+    sqlx::query("UPDATE threads SET updated_at = ?, updated_at_ms = ? WHERE id = ?")
+        .bind(legacy_seconds)
+        .bind(legacy_seconds)
+        .bind(thread_id.to_string())
+        .execute(runtime.pool.as_ref())
         .await
-        .expect("marking should capture a read snapshot")
-        .expect("snapshot observer should be notified");
+        .expect("thread should use a legacy second-precision raw value");
 
-    let writer_runtime = runtime.clone();
-    let writer = tokio::spawn(async move {
-        sqlx::query("UPDATE threads SET updated_at = ?, updated_at_ms = ? WHERE id = ?")
-            .bind(concurrent_update.timestamp())
-            .bind(datetime_to_epoch_millis(concurrent_update))
-            .bind(thread_id.to_string())
-            .execute(writer_runtime.pool.as_ref())
-            .await
-    });
-    let outcome = mark_task
+    runtime
+        .mark_thread_ids_read(&[thread_id])
         .await
-        .expect("mark task should not panic")
         .expect("marking read should succeed");
-    writer
+    let marker = sqlx::query_scalar::<_, i64>("SELECT read_at_ms FROM threads WHERE id = ?")
+        .bind(thread_id.to_string())
+        .fetch_one(runtime.pool.as_ref())
         .await
-        .expect("writer task should not panic")
-        .expect("preallocated update should commit after marking");
-
-    assert_eq!(outcome.total_count, 1);
-    assert_eq!(outcome.marked_count, 1);
-
-    let state = runtime
+        .expect("read marker should load");
+    assert_eq!(marker, 1_700_000_000_000);
+    let read = runtime
         .get_thread_read_state(thread_id)
         .await
         .expect("read state should load")
         .expect("thread should exist");
-    assert_eq!(state.updated_at, concurrent_update);
-    assert_eq!(
-        state.read_at,
-        Some(metadata.updated_at),
-        "the read marker must stop at the transactionally captured update"
-    );
-    assert!(state.has_unread());
+    assert_eq!(read.read_at, Some(read.updated_at));
+    assert!(!read.has_unread());
+
+    sqlx::query("UPDATE threads SET updated_at = updated_at + 1 WHERE id = ?")
+        .bind(thread_id.to_string())
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("an old writer should update the second-precision column");
+    let unread = runtime
+        .get_thread_read_state(thread_id)
+        .await
+        .expect("read state should load")
+        .expect("thread should exist");
+    assert_eq!(unread.read_at, None);
+    assert!(unread.has_unread());
+
+    runtime.close().await;
+    tokio::fs::remove_dir_all(&codex_home)
+        .await
+        .expect("temporary state directory should be removed");
+}
+
+#[tokio::test]
+async fn post_snapshot_writes_remain_unread_for_equal_and_regressive_timestamps() {
+    let codex_home = unique_temp_dir();
+    let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+        .await
+        .expect("state db should initialize");
+
+    for (thread_id, timestamp_delta_ms) in [
+        ("00000000-0000-7000-8000-000000000121", 1_i64),
+        ("00000000-0000-7000-8000-000000000122", 0),
+        ("00000000-0000-7000-8000-000000000123", -1),
+    ] {
+        let thread_id = ThreadId::from_string(thread_id).expect("valid thread id");
+        let metadata = test_thread_metadata(&codex_home, thread_id, PathBuf::from("/tmp/project"));
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("thread should insert");
+        let concurrent_update =
+            metadata.updated_at + chrono::Duration::milliseconds(timestamp_delta_ms);
+        let (snapshot_sender, snapshot_receiver) = oneshot::channel();
+        let mark_runtime = runtime.clone();
+        let mark_task = tokio::spawn(async move {
+            mark_runtime
+                .mark_thread_ids_read_inner(&[thread_id], Some(snapshot_sender))
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), snapshot_receiver)
+            .await
+            .expect("marking should capture a read snapshot")
+            .expect("snapshot observer should be notified");
+
+        let writer_runtime = runtime.clone();
+        let writer = tokio::spawn(async move {
+            sqlx::query("UPDATE threads SET updated_at = ?, updated_at_ms = ? WHERE id = ?")
+                .bind(concurrent_update.timestamp())
+                .bind(datetime_to_epoch_millis(concurrent_update))
+                .bind(thread_id.to_string())
+                .execute(writer_runtime.pool.as_ref())
+                .await
+        });
+        let outcome = mark_task
+            .await
+            .expect("mark task should not panic")
+            .expect("marking read should succeed");
+        writer
+            .await
+            .expect("writer task should not panic")
+            .expect("post-snapshot update should commit after marking");
+
+        assert_eq!(outcome.total_count, 1);
+        assert_eq!(outcome.marked_count, 1);
+        let state = runtime
+            .get_thread_read_state(thread_id)
+            .await
+            .expect("read state should load")
+            .expect("thread should exist");
+        assert_eq!(state.updated_at, concurrent_update);
+        assert_eq!(
+            state.read_at, None,
+            "every explicit timestamp write must clear the read marker"
+        );
+        assert!(state.has_unread());
+    }
 
     runtime.close().await;
     tokio::fs::remove_dir_all(&codex_home)

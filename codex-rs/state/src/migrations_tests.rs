@@ -45,6 +45,7 @@ async fn read_state_migration_backfills_only_rows_present_during_upgrade() {
     )
     .await;
     insert_minimal_thread(&pool, "00000000-0000-0000-0000-000000000452", 0).await;
+    insert_minimal_thread(&pool, "00000000-0000-0000-0000-000000000454", 1_700_000_000).await;
 
     STATE_MIGRATOR
         .run(&pool)
@@ -62,7 +63,10 @@ async fn read_state_migration_backfills_only_rows_present_during_upgrade() {
         .fetch_all(&pool)
         .await
         .expect("read markers should load");
-    assert_eq!(read_markers, vec![1_700_000_000_123, 1, 0]);
+    assert_eq!(
+        read_markers,
+        vec![1_700_000_000_123, 1, 0, 1_700_000_000_000]
+    );
 
     pool.close().await;
 }

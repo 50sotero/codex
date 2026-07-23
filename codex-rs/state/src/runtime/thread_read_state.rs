@@ -5,7 +5,6 @@ const READ_MARK_CHUNK_SIZE: usize = 500;
 #[derive(Debug)]
 struct ThreadReadSnapshotRow {
     thread_id: String,
-    updated_at_ms: i64,
     read_marker_ms: i64,
 }
 
@@ -88,13 +87,13 @@ WHERE id = ?
                 let thread_id: String = row.try_get("id")?;
                 let updated_at_ms: i64 = row.try_get("updated_at_ms")?;
                 let read_at_ms: i64 = row.try_get("read_at_ms")?;
-                if read_at_ms == 0 || updated_at_ms > read_at_ms {
+                let read_marker_ms = read_marker_for_updated_at(updated_at_ms);
+                if read_at_ms == 0 || read_marker_ms > read_at_ms {
                     marked_count += 1;
                 }
                 snapshot.push(ThreadReadSnapshotRow {
                     thread_id,
-                    updated_at_ms,
-                    read_marker_ms: read_marker_for_updated_at(updated_at_ms),
+                    read_marker_ms,
                 });
             }
         }
@@ -116,7 +115,7 @@ WHERE id = ?
 
         for chunk in snapshot.chunks(READ_MARK_CHUNK_SIZE) {
             let mut update = QueryBuilder::<Sqlite>::new(
-                "WITH read_snapshot(thread_id, updated_at_ms, read_marker_ms) AS (VALUES ",
+                "WITH read_snapshot(thread_id, read_marker_ms) AS (VALUES ",
             );
             for (index, row) in chunk.iter().enumerate() {
                 if index > 0 {
@@ -126,8 +125,6 @@ WHERE id = ?
                     .push("(")
                     .push_bind(row.thread_id.as_str())
                     .push(", ")
-                    .push_bind(row.updated_at_ms)
-                    .push(", ")
                     .push_bind(row.read_marker_ms)
                     .push(")");
             }
@@ -136,7 +133,7 @@ WHERE id = ?
 UPDATE threads AS target
 SET read_at_ms = CASE
     WHEN target.read_at_ms = 0
-      OR target.read_at_ms < read_snapshot.updated_at_ms
+      OR target.read_at_ms < read_snapshot.read_marker_ms
         THEN read_snapshot.read_marker_ms
     ELSE target.read_at_ms
 END
@@ -158,6 +155,7 @@ WHERE target.id = read_snapshot.thread_id
 }
 
 fn read_marker_for_updated_at(updated_at_ms: i64) -> i64 {
+    let updated_at_ms = normalize_epoch_millis(updated_at_ms);
     if updated_at_ms == 0 { 1 } else { updated_at_ms }
 }
 
