@@ -841,7 +841,7 @@ ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
     updated_at = CASE
-        WHEN ? OR threads.source_updated_at_ms IS NOT excluded.source_updated_at_ms
+        WHEN ? OR COALESCE(threads.source_updated_at_ms, excluded.source_updated_at_ms) IS NOT excluded.source_updated_at_ms
           OR threads.history_mode IS NOT excluded.history_mode
           OR threads.model IS NOT excluded.model
           OR threads.reasoning_effort IS NOT excluded.reasoning_effort
@@ -855,7 +855,7 @@ ON CONFLICT(id) DO UPDATE SET
     recency_at = threads.recency_at,
     created_at_ms = excluded.created_at_ms,
     updated_at_ms = CASE
-        WHEN ? OR threads.source_updated_at_ms IS NOT excluded.source_updated_at_ms
+        WHEN ? OR COALESCE(threads.source_updated_at_ms, excluded.source_updated_at_ms) IS NOT excluded.source_updated_at_ms
           OR threads.history_mode IS NOT excluded.history_mode
           OR threads.model IS NOT excluded.model
           OR threads.reasoning_effort IS NOT excluded.reasoning_effort
@@ -891,7 +891,7 @@ ON CONFLICT(id) DO UPDATE SET
     git_branch = COALESCE(threads.git_branch, excluded.git_branch),
     git_origin_url = COALESCE(threads.git_origin_url, excluded.git_origin_url),
     snapshot_revision = CASE
-        WHEN ? OR threads.source_updated_at_ms IS NOT excluded.source_updated_at_ms
+        WHEN ? OR COALESCE(threads.source_updated_at_ms, excluded.source_updated_at_ms) IS NOT excluded.source_updated_at_ms
           OR threads.history_mode IS NOT excluded.history_mode
           OR threads.model IS NOT excluded.model
           OR threads.reasoning_effort IS NOT excluded.reasoning_effort

@@ -59,13 +59,24 @@ async fn read_state_migration_backfills_only_rows_present_during_upgrade() {
     )
     .await;
 
-    let read_markers = sqlx::query_scalar::<_, i64>("SELECT read_at_ms FROM threads ORDER BY id")
+    let migrated = sqlx::query("SELECT read_at_ms, source_updated_at_ms FROM threads ORDER BY id")
         .fetch_all(&pool)
         .await
-        .expect("read markers should load");
+        .expect("read state should load");
     assert_eq!(
-        read_markers,
-        vec![1_700_000_000_123, 1, 0, 1_700_000_000_000]
+        migrated
+            .iter()
+            .map(|row| (
+                row.get::<i64, _>("read_at_ms"),
+                row.get::<Option<i64>, _>("source_updated_at_ms"),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (1_700_000_000_123, None),
+            (1, None),
+            (0, None),
+            (1_700_000_000_000, None),
+        ]
     );
 
     pool.close().await;
