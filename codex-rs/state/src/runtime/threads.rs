@@ -4,6 +4,12 @@ use codex_protocol::protocol::SessionSource;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
+#[derive(Clone, Copy)]
+enum ThreadSnapshotWrite {
+    Reconcile,
+    Incremental,
+}
+
 impl StateRuntime {
     pub async fn get_thread(&self, id: ThreadId) -> anyhow::Result<Option<crate::ThreadMetadata>> {
         let row = sqlx::query(
@@ -522,8 +528,12 @@ ON CONFLICT(child_thread_id) DO NOTHING
 
     /// Insert or replace thread metadata directly.
     pub async fn upsert_thread(&self, metadata: &crate::ThreadMetadata) -> anyhow::Result<()> {
-        self.upsert_thread_with_creation_memory_mode(metadata, /*creation_memory_mode*/ None)
-            .await
+        self.upsert_thread_with_creation_memory_mode(
+            metadata,
+            /*creation_memory_mode*/ None,
+            ThreadSnapshotWrite::Reconcile,
+        )
+        .await
     }
 
     pub async fn insert_thread_if_absent(
@@ -543,6 +553,7 @@ INSERT INTO threads (
     recency_at,
     created_at_ms,
     updated_at_ms,
+    source_updated_at_ms,
     recency_at_ms,
     source,
     history_mode,
@@ -567,7 +578,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -578,6 +589,7 @@ ON CONFLICT(id) DO NOTHING
         .bind(datetime_to_epoch_seconds(recency_at))
         .bind(datetime_to_epoch_millis(metadata.created_at))
         .bind(datetime_to_epoch_millis(updated_at))
+        .bind(datetime_to_epoch_millis(metadata.updated_at))
         .bind(datetime_to_epoch_millis(recency_at))
         .bind(metadata.source.as_str())
         .bind(metadata.history_mode.as_str())
@@ -780,7 +792,9 @@ WHERE id = ?
         &self,
         metadata: &crate::ThreadMetadata,
         creation_memory_mode: Option<&str>,
+        snapshot_write: ThreadSnapshotWrite,
     ) -> anyhow::Result<()> {
+        let source_updated_at_ms = datetime_to_epoch_millis(metadata.updated_at);
         let updated_at = self.allocate_thread_updated_at(metadata.updated_at)?;
         let insert_recency_at = self.allocate_thread_recency_at(metadata.recency_at)?;
         let preview = metadata_preview(metadata);
@@ -797,6 +811,7 @@ INSERT INTO threads (
     recency_at,
     created_at_ms,
     updated_at_ms,
+    source_updated_at_ms,
     recency_at_ms,
     source,
     history_mode,
@@ -821,14 +836,37 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
-    updated_at = excluded.updated_at,
+    updated_at = CASE
+        WHEN ? OR threads.source_updated_at_ms IS NOT excluded.source_updated_at_ms
+          OR threads.history_mode IS NOT excluded.history_mode
+          OR threads.model IS NOT excluded.model
+          OR threads.reasoning_effort IS NOT excluded.reasoning_effort
+          OR threads.title IS NOT excluded.title
+          OR threads.preview IS NOT COALESCE(NULLIF(excluded.preview, ''), threads.preview)
+          OR threads.tokens_used IS NOT excluded.tokens_used
+          OR threads.first_user_message IS NOT excluded.first_user_message
+        THEN excluded.updated_at
+        ELSE threads.updated_at
+    END,
     recency_at = threads.recency_at,
     created_at_ms = excluded.created_at_ms,
-    updated_at_ms = excluded.updated_at_ms,
+    updated_at_ms = CASE
+        WHEN ? OR threads.source_updated_at_ms IS NOT excluded.source_updated_at_ms
+          OR threads.history_mode IS NOT excluded.history_mode
+          OR threads.model IS NOT excluded.model
+          OR threads.reasoning_effort IS NOT excluded.reasoning_effort
+          OR threads.title IS NOT excluded.title
+          OR threads.preview IS NOT COALESCE(NULLIF(excluded.preview, ''), threads.preview)
+          OR threads.tokens_used IS NOT excluded.tokens_used
+          OR threads.first_user_message IS NOT excluded.first_user_message
+        THEN excluded.updated_at_ms
+        ELSE threads.updated_at_ms
+    END,
+    source_updated_at_ms = excluded.source_updated_at_ms,
     recency_at_ms = threads.recency_at_ms,
     source = excluded.source,
     history_mode = excluded.history_mode,
@@ -851,7 +889,20 @@ ON CONFLICT(id) DO UPDATE SET
     archived_at = excluded.archived_at,
     git_sha = COALESCE(threads.git_sha, excluded.git_sha),
     git_branch = COALESCE(threads.git_branch, excluded.git_branch),
-    git_origin_url = COALESCE(threads.git_origin_url, excluded.git_origin_url)
+    git_origin_url = COALESCE(threads.git_origin_url, excluded.git_origin_url),
+    snapshot_revision = CASE
+        WHEN ? OR threads.source_updated_at_ms IS NOT excluded.source_updated_at_ms
+          OR threads.history_mode IS NOT excluded.history_mode
+          OR threads.model IS NOT excluded.model
+          OR threads.reasoning_effort IS NOT excluded.reasoning_effort
+          OR threads.title IS NOT excluded.title
+          OR threads.preview IS NOT COALESCE(NULLIF(excluded.preview, ''), threads.preview)
+          OR threads.tokens_used IS NOT excluded.tokens_used
+          OR threads.first_user_message IS NOT excluded.first_user_message
+        THEN threads.snapshot_revision + 1
+        ELSE threads.snapshot_revision
+    END,
+    read_state_write_token = 1 - threads.read_state_write_token
             "#,
         )
         .bind(metadata.id.to_string())
@@ -861,6 +912,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(datetime_to_epoch_seconds(insert_recency_at))
         .bind(datetime_to_epoch_millis(metadata.created_at))
         .bind(datetime_to_epoch_millis(updated_at))
+        .bind(source_updated_at_ms)
         .bind(datetime_to_epoch_millis(insert_recency_at))
         .bind(metadata.source.as_str())
         .bind(metadata.history_mode.as_str())
@@ -895,6 +947,9 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(metadata.git_branch.as_deref())
         .bind(metadata.git_origin_url.as_deref())
         .bind(creation_memory_mode.unwrap_or("enabled"))
+        .bind(matches!(snapshot_write, ThreadSnapshotWrite::Incremental))
+        .bind(matches!(snapshot_write, ThreadSnapshotWrite::Incremental))
+        .bind(matches!(snapshot_write, ThreadSnapshotWrite::Incremental))
         .execute(self.pool.as_ref())
         .await?;
         self.insert_thread_spawn_edge_from_source_if_absent(metadata.id, metadata.source.as_str())
@@ -932,10 +987,19 @@ ON CONFLICT(id) DO UPDATE SET
             metadata.updated_at = updated_at;
         }
         let upsert_result = if existing_metadata.is_none() {
-            self.upsert_thread_with_creation_memory_mode(&metadata, new_thread_memory_mode)
-                .await
+            self.upsert_thread_with_creation_memory_mode(
+                &metadata,
+                new_thread_memory_mode,
+                ThreadSnapshotWrite::Incremental,
+            )
+            .await
         } else {
-            self.upsert_thread(&metadata).await
+            self.upsert_thread_with_creation_memory_mode(
+                &metadata,
+                /*creation_memory_mode*/ None,
+                ThreadSnapshotWrite::Incremental,
+            )
+            .await
         };
         upsert_result?;
         if let Some(memory_mode) = extract_memory_mode(items)
@@ -1442,7 +1506,11 @@ mod tests {
         let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
 
         runtime
-            .upsert_thread_with_creation_memory_mode(&metadata, Some("disabled"))
+            .upsert_thread_with_creation_memory_mode(
+                &metadata,
+                Some("disabled"),
+                ThreadSnapshotWrite::Reconcile,
+            )
             .await
             .expect("initial insert should succeed");
 

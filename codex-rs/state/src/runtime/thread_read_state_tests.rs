@@ -98,6 +98,145 @@ async fn marking_read_tracks_future_updates_and_deduplicates_ids() {
 }
 
 #[tokio::test]
+async fn idempotent_metadata_reconcile_preserves_read_state() {
+    let codex_home = unique_temp_dir();
+    let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+        .await
+        .expect("state db should initialize");
+    let thread_id =
+        ThreadId::from_string("00000000-0000-7000-8000-000000000113").expect("valid thread id");
+    let metadata = test_thread_metadata(&codex_home, thread_id, PathBuf::from("/tmp/project"));
+    runtime
+        .upsert_thread(&metadata)
+        .await
+        .expect("thread should insert");
+    runtime
+        .mark_thread_ids_read(&[thread_id])
+        .await
+        .expect("thread should be marked read");
+    let before = runtime
+        .get_thread_read_state(thread_id)
+        .await
+        .expect("read state should load")
+        .expect("thread should exist");
+
+    runtime
+        .upsert_thread(&metadata)
+        .await
+        .expect("idempotent reconcile should succeed");
+
+    let after = runtime
+        .get_thread_read_state(thread_id)
+        .await
+        .expect("read state should load")
+        .expect("thread should exist");
+    assert_eq!(after, before);
+    assert!(!after.has_unread());
+}
+
+#[tokio::test]
+async fn current_equal_and_regressive_snapshot_changes_become_unread() {
+    let codex_home = unique_temp_dir();
+    let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+        .await
+        .expect("state db should initialize");
+    let thread_id =
+        ThreadId::from_string("00000000-0000-7000-8000-000000000114").expect("valid thread id");
+    let metadata = test_thread_metadata(&codex_home, thread_id, PathBuf::from("/tmp/project"));
+    runtime
+        .upsert_thread(&metadata)
+        .await
+        .expect("thread should insert");
+    runtime
+        .mark_thread_ids_read(&[thread_id])
+        .await
+        .expect("thread should be marked read");
+
+    let mut equal_timestamp_change = metadata.clone();
+    equal_timestamp_change.preview = Some("equal timestamp snapshot".to_string());
+    runtime
+        .upsert_thread(&equal_timestamp_change)
+        .await
+        .expect("equal timestamp snapshot should persist");
+    assert!(
+        runtime
+            .get_thread_read_state(thread_id)
+            .await
+            .expect("read state should load")
+            .expect("thread should exist")
+            .has_unread()
+    );
+
+    runtime
+        .mark_thread_ids_read(&[thread_id])
+        .await
+        .expect("thread should be marked read again");
+    let mut regressive_change = equal_timestamp_change;
+    regressive_change.updated_at -= chrono::Duration::seconds(10);
+    regressive_change.preview = Some("regressive timestamp snapshot".to_string());
+    runtime
+        .upsert_thread(&regressive_change)
+        .await
+        .expect("regressive snapshot should persist");
+    assert!(
+        runtime
+            .get_thread_read_state(thread_id)
+            .await
+            .expect("read state should load")
+            .expect("thread should exist")
+            .has_unread()
+    );
+}
+
+#[tokio::test]
+async fn legacy_equal_second_snapshot_write_becomes_unread() {
+    let codex_home = unique_temp_dir();
+    let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+        .await
+        .expect("state db should initialize");
+    let thread_id =
+        ThreadId::from_string("00000000-0000-7000-8000-000000000117").expect("valid thread id");
+    let metadata = test_thread_metadata(&codex_home, thread_id, PathBuf::from("/tmp/project"));
+    runtime
+        .upsert_thread(&metadata)
+        .await
+        .expect("thread should insert");
+    runtime
+        .mark_thread_ids_read(&[thread_id])
+        .await
+        .expect("thread should be marked read");
+    let before_updated_at_ms =
+        sqlx::query_scalar::<_, i64>("SELECT updated_at_ms FROM threads WHERE id = ?")
+            .bind(thread_id.to_string())
+            .fetch_one(runtime.pool.as_ref())
+            .await
+            .expect("updated timestamp should load");
+
+    sqlx::query("UPDATE threads SET updated_at = updated_at, preview = ? WHERE id = ?")
+        .bind("legacy equal-second snapshot")
+        .bind(thread_id.to_string())
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("legacy snapshot should persist");
+
+    let after_updated_at_ms =
+        sqlx::query_scalar::<_, i64>("SELECT updated_at_ms FROM threads WHERE id = ?")
+            .bind(thread_id.to_string())
+            .fetch_one(runtime.pool.as_ref())
+            .await
+            .expect("updated timestamp should load");
+    assert_eq!(after_updated_at_ms, before_updated_at_ms);
+    assert!(
+        runtime
+            .get_thread_read_state(thread_id)
+            .await
+            .expect("read state should load")
+            .expect("thread should exist")
+            .has_unread()
+    );
+}
+
+#[tokio::test]
 async fn zero_sentinel_is_counted_as_unread_at_the_unix_epoch() {
     let codex_home = unique_temp_dir();
     let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
