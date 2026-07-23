@@ -5,6 +5,7 @@ mod log;
 mod memories;
 mod thread_goal;
 mod thread_metadata;
+mod thread_read_state;
 
 pub use agent_job::AgentJob;
 pub use agent_job::AgentJobCreateParams;
@@ -35,6 +36,8 @@ pub use thread_metadata::ThreadMetadata;
 pub use thread_metadata::ThreadMetadataBuilder;
 pub use thread_metadata::ThreadRelationFilter;
 pub use thread_metadata::ThreadsPage;
+pub use thread_read_state::ThreadReadState;
+pub use thread_read_state::ThreadReadStateMarkAllOutcome;
 
 pub(crate) use agent_job::AgentJobItemRow;
 pub(crate) use agent_job::AgentJobRow;

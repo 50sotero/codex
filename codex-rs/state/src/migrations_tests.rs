@@ -27,6 +27,83 @@ fn migrator_through(version: i64) -> Migrator {
 }
 
 #[tokio::test]
+async fn read_state_migration_backfills_only_rows_present_during_upgrade() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory database should open");
+    migrator_through(/*version*/ 44)
+        .run(&pool)
+        .await
+        .expect("pre-read-state migrations should apply");
+
+    insert_minimal_thread(
+        &pool,
+        "00000000-0000-0000-0000-000000000451",
+        1_700_000_000_123,
+    )
+    .await;
+    insert_minimal_thread(&pool, "00000000-0000-0000-0000-000000000452", 0).await;
+
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("read-state migration should apply");
+
+    insert_minimal_thread(
+        &pool,
+        "00000000-0000-0000-0000-000000000453",
+        1_700_000_000_456,
+    )
+    .await;
+
+    let read_markers = sqlx::query_scalar::<_, i64>("SELECT read_at_ms FROM threads ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .expect("read markers should load");
+    assert_eq!(read_markers, vec![1_700_000_000_123, 1, 0]);
+
+    pool.close().await;
+}
+
+async fn insert_minimal_thread(pool: &sqlx::SqlitePool, thread_id: &str, updated_at_ms: i64) {
+    sqlx::query(
+        r#"
+INSERT INTO threads (
+    id,
+    rollout_path,
+    created_at,
+    updated_at,
+    created_at_ms,
+    updated_at_ms,
+    source,
+    model_provider,
+    cwd,
+    title,
+    sandbox_policy,
+    approval_mode
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(thread_id)
+    .bind("/tmp/legacy.jsonl")
+    .bind(updated_at_ms / 1_000)
+    .bind(updated_at_ms / 1_000)
+    .bind(updated_at_ms)
+    .bind(updated_at_ms)
+    .bind("cli")
+    .bind("openai")
+    .bind("/tmp")
+    .bind("")
+    .bind("read-only")
+    .bind("on-request")
+    .execute(pool)
+    .await
+    .expect("thread should insert");
+}
+
+#[tokio::test]
 async fn recency_migration_backfills_and_seeds_old_binary_inserts() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
