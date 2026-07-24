@@ -2,6 +2,9 @@ use super::*;
 use crate::error_code::method_not_found;
 use crate::thread_status::attach_thread_read_state_from_db;
 use codex_app_server_protocol::SelectedCapabilityRoot;
+use codex_app_server_protocol::ThreadReadStateMarkAllParams;
+use codex_app_server_protocol::ThreadReadStateMarkAllResponse;
+use codex_app_server_protocol::ThreadReadStateScope;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
@@ -14,6 +17,7 @@ const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
 const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
     "thread/rollback is deprecated and will be removed soon";
 
+#[derive(Clone)]
 struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
     source_kinds: Option<Vec<ThreadSourceKind>>,
@@ -692,6 +696,15 @@ impl ThreadRequestProcessor {
         params: ThreadReadParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_read_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_read_state_mark_all(
+        &self,
+        params: ThreadReadStateMarkAllParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_read_state_mark_all_response_inner(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -2209,6 +2222,28 @@ impl ThreadRequestProcessor {
         Ok(ThreadReadResponse { thread })
     }
 
+    async fn thread_read_state_mark_all_response_inner(
+        &self,
+        params: ThreadReadStateMarkAllParams,
+    ) -> Result<ThreadReadStateMarkAllResponse, JSONRPCErrorError> {
+        let thread_ids = self
+            .list_thread_ids_for_read_state_scope(&params.scope)
+            .await?;
+        let outcome = self
+            .state_db_for_read_state()?
+            .mark_thread_ids_read(&thread_ids)
+            .await
+            .map_err(|err| internal_error(format!("failed to mark threads read: {err}")))?;
+        Ok(ThreadReadStateMarkAllResponse {
+            total_count: saturating_u32(outcome.total_count),
+            marked_count: saturating_u32(outcome.marked_count),
+            already_read_count: saturating_u32(outcome.already_read_count),
+            read_at: outcome
+                .operation_at
+                .map(|operation_at| operation_at.timestamp()),
+        })
+    }
+
     async fn attach_thread_read_states(&self, threads: &mut [Thread]) {
         for thread in threads {
             self.attach_thread_read_state(thread).await;
@@ -3724,6 +3759,48 @@ impl ThreadRequestProcessor {
         Ok(GetConversationSummaryResponse { summary })
     }
 
+    async fn list_thread_ids_for_read_state_scope(
+        &self,
+        scope: &ThreadReadStateScope,
+    ) -> Result<Vec<ThreadId>, JSONRPCErrorError> {
+        let filters = ThreadListFilters {
+            model_providers: scope.model_providers.clone(),
+            source_kinds: scope.source_kinds.clone(),
+            archived: scope.archived.unwrap_or(false),
+            cwd_filters: normalize_thread_list_cwd_filters(scope.cwd.clone())?,
+            search_term: scope.search_term.clone(),
+            use_state_db_only: scope.use_state_db_only,
+            relation_filter: None,
+        };
+        let mut cursor = None;
+        let mut thread_ids = Vec::new();
+        loop {
+            let (page, next_cursor) = self
+                .list_threads_common(
+                    THREAD_LIST_MAX_LIMIT,
+                    cursor.clone(),
+                    StoreThreadSortKey::RecencyAt,
+                    SortDirection::Desc,
+                    filters.clone(),
+                )
+                .await?;
+            thread_ids.extend(page.into_iter().map(|thread| thread.thread_id));
+            match next_cursor {
+                Some(next_cursor) if cursor.as_ref() != Some(&next_cursor) => {
+                    cursor = Some(next_cursor);
+                }
+                Some(_) | None => break,
+            }
+        }
+        Ok(thread_ids)
+    }
+
+    fn state_db_for_read_state(&self) -> Result<&StateDbHandle, JSONRPCErrorError> {
+        self.state_db
+            .as_ref()
+            .ok_or_else(|| unsupported_thread_store_operation("thread read-state persistence"))
+    }
+
     async fn list_threads_common(
         &self,
         requested_page_size: usize,
@@ -3835,6 +3912,10 @@ impl ThreadRequestProcessor {
 
         Ok((items, next_cursor))
     }
+}
+
+fn saturating_u32(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 fn xcode_26_4_mcp_elicitations_auto_deny(

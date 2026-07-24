@@ -3980,6 +3980,61 @@
       ],
       "type": "object"
     },
+    "ThreadReadStateScope": {
+      "description": "Filters selecting the persisted threads affected by a read-state operation.",
+      "properties": {
+        "archived": {
+          "description": "True selects archived threads; omission or false selects active threads.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadListCwdFilter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional exact working-directory filter or filters."
+        },
+        "modelProviders": {
+          "description": "Optional provider filter. Omission selects the current provider; an empty list selects all.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "searchTerm": {
+          "description": "Optional substring filter for the extracted thread title or preview.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceKinds": {
+          "description": "Optional source filter. Omission or an empty list selects interactive sources.",
+          "items": {
+            "$ref": "#/definitions/ThreadSourceKind"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "useStateDbOnly": {
+          "description": "Read from the state DB without scanning rollouts to repair metadata.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "ThreadRealtimeAudioChunk": {
       "description": "EXPERIMENTAL - thread realtime audio chunk.",
       "properties": {
