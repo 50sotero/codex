@@ -4,6 +4,12 @@ use codex_protocol::protocol::SessionSource;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
+#[derive(Clone, Copy)]
+enum ThreadSnapshotWrite {
+    Reconcile,
+    Incremental,
+}
+
 impl StateRuntime {
     pub async fn get_thread(&self, id: ThreadId) -> anyhow::Result<Option<crate::ThreadMetadata>> {
         let row = sqlx::query(
@@ -13,6 +19,7 @@ SELECT
     threads.rollout_path,
     threads.created_at_ms AS created_at,
     threads.updated_at_ms AS updated_at,
+    threads.source_updated_at_ms AS source_updated_at,
     threads.recency_at_ms AS recency_at,
     threads.source,
     threads.history_mode,
@@ -522,8 +529,12 @@ ON CONFLICT(child_thread_id) DO NOTHING
 
     /// Insert or replace thread metadata directly.
     pub async fn upsert_thread(&self, metadata: &crate::ThreadMetadata) -> anyhow::Result<()> {
-        self.upsert_thread_with_creation_memory_mode(metadata, /*creation_memory_mode*/ None)
-            .await
+        self.upsert_thread_with_creation_memory_mode(
+            metadata,
+            /*creation_memory_mode*/ None,
+            ThreadSnapshotWrite::Reconcile,
+        )
+        .await
     }
 
     pub async fn insert_thread_if_absent(
@@ -543,6 +554,7 @@ INSERT INTO threads (
     recency_at,
     created_at_ms,
     updated_at_ms,
+    source_updated_at_ms,
     recency_at_ms,
     source,
     history_mode,
@@ -567,7 +579,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -578,6 +590,7 @@ ON CONFLICT(id) DO NOTHING
         .bind(datetime_to_epoch_seconds(recency_at))
         .bind(datetime_to_epoch_millis(metadata.created_at))
         .bind(datetime_to_epoch_millis(updated_at))
+        .bind(metadata.source_updated_at().map(datetime_to_epoch_millis))
         .bind(datetime_to_epoch_millis(recency_at))
         .bind(metadata.source.as_str())
         .bind(metadata.history_mode.as_str())
@@ -780,7 +793,9 @@ WHERE id = ?
         &self,
         metadata: &crate::ThreadMetadata,
         creation_memory_mode: Option<&str>,
+        snapshot_write: ThreadSnapshotWrite,
     ) -> anyhow::Result<()> {
+        let source_updated_at_ms = metadata.source_updated_at().map(datetime_to_epoch_millis);
         let updated_at = self.allocate_thread_updated_at(metadata.updated_at)?;
         let insert_recency_at = self.allocate_thread_recency_at(metadata.recency_at)?;
         let preview = metadata_preview(metadata);
@@ -797,6 +812,7 @@ INSERT INTO threads (
     recency_at,
     created_at_ms,
     updated_at_ms,
+    source_updated_at_ms,
     recency_at_ms,
     source,
     history_mode,
@@ -821,14 +837,53 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
-    updated_at = excluded.updated_at,
+    updated_at = CASE
+        WHEN ? OR (
+            excluded.source_updated_at_ms IS NOT NULL
+            AND (
+                threads.source_updated_at_ms IS NOT NULL
+                AND threads.source_updated_at_ms IS NOT excluded.source_updated_at_ms
+                OR threads.source_updated_at_ms IS NULL
+                AND excluded.source_updated_at_ms > threads.updated_at_ms
+            )
+        )
+          OR threads.history_mode IS NOT excluded.history_mode
+          OR threads.model IS NOT excluded.model
+          OR threads.reasoning_effort IS NOT excluded.reasoning_effort
+          OR threads.title IS NOT excluded.title
+          OR threads.preview IS NOT COALESCE(NULLIF(excluded.preview, ''), threads.preview)
+          OR threads.tokens_used IS NOT excluded.tokens_used
+          OR threads.first_user_message IS NOT excluded.first_user_message
+        THEN excluded.updated_at
+        ELSE threads.updated_at
+    END,
     recency_at = threads.recency_at,
     created_at_ms = excluded.created_at_ms,
-    updated_at_ms = excluded.updated_at_ms,
+    updated_at_ms = CASE
+        WHEN ? OR (
+            excluded.source_updated_at_ms IS NOT NULL
+            AND (
+                threads.source_updated_at_ms IS NOT NULL
+                AND threads.source_updated_at_ms IS NOT excluded.source_updated_at_ms
+                OR threads.source_updated_at_ms IS NULL
+                AND excluded.source_updated_at_ms > threads.updated_at_ms
+            )
+        )
+          OR threads.history_mode IS NOT excluded.history_mode
+          OR threads.model IS NOT excluded.model
+          OR threads.reasoning_effort IS NOT excluded.reasoning_effort
+          OR threads.title IS NOT excluded.title
+          OR threads.preview IS NOT COALESCE(NULLIF(excluded.preview, ''), threads.preview)
+          OR threads.tokens_used IS NOT excluded.tokens_used
+          OR threads.first_user_message IS NOT excluded.first_user_message
+        THEN excluded.updated_at_ms
+        ELSE threads.updated_at_ms
+    END,
+    source_updated_at_ms = COALESCE(excluded.source_updated_at_ms, threads.source_updated_at_ms),
     recency_at_ms = threads.recency_at_ms,
     source = excluded.source,
     history_mode = excluded.history_mode,
@@ -851,7 +906,28 @@ ON CONFLICT(id) DO UPDATE SET
     archived_at = excluded.archived_at,
     git_sha = COALESCE(threads.git_sha, excluded.git_sha),
     git_branch = COALESCE(threads.git_branch, excluded.git_branch),
-    git_origin_url = COALESCE(threads.git_origin_url, excluded.git_origin_url)
+    git_origin_url = COALESCE(threads.git_origin_url, excluded.git_origin_url),
+    snapshot_revision = CASE
+        WHEN ? OR (
+            excluded.source_updated_at_ms IS NOT NULL
+            AND (
+                threads.source_updated_at_ms IS NOT NULL
+                AND threads.source_updated_at_ms IS NOT excluded.source_updated_at_ms
+                OR threads.source_updated_at_ms IS NULL
+                AND excluded.source_updated_at_ms > threads.updated_at_ms
+            )
+        )
+          OR threads.history_mode IS NOT excluded.history_mode
+          OR threads.model IS NOT excluded.model
+          OR threads.reasoning_effort IS NOT excluded.reasoning_effort
+          OR threads.title IS NOT excluded.title
+          OR threads.preview IS NOT COALESCE(NULLIF(excluded.preview, ''), threads.preview)
+          OR threads.tokens_used IS NOT excluded.tokens_used
+          OR threads.first_user_message IS NOT excluded.first_user_message
+        THEN threads.snapshot_revision + 1
+        ELSE threads.snapshot_revision
+    END,
+    read_state_write_token = 1 - threads.read_state_write_token
             "#,
         )
         .bind(metadata.id.to_string())
@@ -861,6 +937,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(datetime_to_epoch_seconds(insert_recency_at))
         .bind(datetime_to_epoch_millis(metadata.created_at))
         .bind(datetime_to_epoch_millis(updated_at))
+        .bind(source_updated_at_ms)
         .bind(datetime_to_epoch_millis(insert_recency_at))
         .bind(metadata.source.as_str())
         .bind(metadata.history_mode.as_str())
@@ -895,6 +972,9 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(metadata.git_branch.as_deref())
         .bind(metadata.git_origin_url.as_deref())
         .bind(creation_memory_mode.unwrap_or("enabled"))
+        .bind(matches!(snapshot_write, ThreadSnapshotWrite::Incremental))
+        .bind(matches!(snapshot_write, ThreadSnapshotWrite::Incremental))
+        .bind(matches!(snapshot_write, ThreadSnapshotWrite::Incremental))
         .execute(self.pool.as_ref())
         .await?;
         self.insert_thread_spawn_edge_from_source_if_absent(metadata.id, metadata.source.as_str())
@@ -929,13 +1009,22 @@ ON CONFLICT(id) DO UPDATE SET
             None => file_modified_time_utc(builder.rollout_path.as_path()).await,
         };
         if let Some(updated_at) = updated_at {
-            metadata.updated_at = updated_at;
+            metadata.set_updated_at_from_source(updated_at);
         }
         let upsert_result = if existing_metadata.is_none() {
-            self.upsert_thread_with_creation_memory_mode(&metadata, new_thread_memory_mode)
-                .await
+            self.upsert_thread_with_creation_memory_mode(
+                &metadata,
+                new_thread_memory_mode,
+                ThreadSnapshotWrite::Incremental,
+            )
+            .await
         } else {
-            self.upsert_thread(&metadata).await
+            self.upsert_thread_with_creation_memory_mode(
+                &metadata,
+                /*creation_memory_mode*/ None,
+                ThreadSnapshotWrite::Incremental,
+            )
+            .await
         };
         upsert_result?;
         if let Some(memory_mode) = extract_memory_mode(items)
@@ -961,7 +1050,7 @@ ON CONFLICT(id) DO UPDATE SET
         metadata.archived_at = Some(archived_at);
         metadata.rollout_path = rollout_path.to_path_buf();
         if let Some(updated_at) = file_modified_time_utc(rollout_path).await {
-            metadata.updated_at = updated_at;
+            metadata.set_updated_at_from_source(updated_at);
         }
         if metadata.id != thread_id {
             warn!(
@@ -984,7 +1073,7 @@ ON CONFLICT(id) DO UPDATE SET
         metadata.archived_at = None;
         metadata.rollout_path = rollout_path.to_path_buf();
         if let Some(updated_at) = file_modified_time_utc(rollout_path).await {
-            metadata.updated_at = updated_at;
+            metadata.set_updated_at_from_source(updated_at);
         }
         if metadata.id != thread_id {
             warn!(
@@ -1210,6 +1299,7 @@ SELECT
     threads.rollout_path,
     threads.created_at_ms AS created_at,
     threads.updated_at_ms AS updated_at,
+    threads.source_updated_at_ms AS source_updated_at,
     threads.recency_at_ms AS recency_at,
     threads.source,
     threads.history_mode,
@@ -1431,6 +1521,159 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
 
+    async fn snapshot_state(
+        runtime: &StateRuntime,
+        thread_id: ThreadId,
+    ) -> (Option<i64>, i64, i64, i64) {
+        sqlx::query_as(
+            "SELECT source_updated_at_ms, updated_at_ms, snapshot_revision, read_at_ms \
+             FROM threads WHERE id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(runtime.pool.as_ref())
+        .await
+        .expect("snapshot state should load")
+    }
+
+    async fn mark_thread_read(runtime: &StateRuntime, thread_id: ThreadId) {
+        sqlx::query(
+            "UPDATE threads SET read_at_ms = CASE WHEN updated_at_ms = 0 THEN 1 ELSE updated_at_ms END \
+             WHERE id = ?",
+        )
+        .bind(thread_id.to_string())
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("read marker should persist");
+    }
+
+    #[tokio::test]
+    async fn reconcile_distinguishes_source_adoption_from_a_newer_snapshot() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+        runtime.upsert_thread(&metadata).await.expect("insert");
+        let raw_ms = datetime_to_epoch_millis(metadata.updated_at);
+        let allocated_ms = raw_ms + 100;
+
+        sqlx::query(
+            "UPDATE threads SET source_updated_at_ms = NULL, updated_at_ms = ?, \
+             snapshot_revision = 7 WHERE id = ?",
+        )
+        .bind(allocated_ms)
+        .bind(thread_id.to_string())
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("legacy state should persist");
+        mark_thread_read(&runtime, thread_id).await;
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("adopt source");
+        assert_eq!(
+            snapshot_state(&runtime, thread_id).await,
+            (Some(raw_ms), allocated_ms, 7, allocated_ms),
+            "an older raw source initializes metadata without manufacturing a snapshot"
+        );
+
+        sqlx::query("UPDATE threads SET source_updated_at_ms = NULL WHERE id = ?")
+            .bind(thread_id.to_string())
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("unknown source should persist");
+        mark_thread_read(&runtime, thread_id).await;
+        metadata.set_updated_at_from_source(
+            DateTime::<Utc>::from_timestamp_millis(allocated_ms + 100).expect("timestamp"),
+        );
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("new snapshot");
+        assert_eq!(
+            snapshot_state(&runtime, thread_id).await,
+            (Some(allocated_ms + 100), allocated_ms + 100, 8, 0),
+            "a clearly newer first raw source must invalidate the read marker"
+        );
+    }
+
+    #[tokio::test]
+    async fn metadata_round_trip_preserves_the_raw_source_timestamp() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+        runtime.upsert_thread(&metadata).await.expect("insert");
+        let raw_ms = datetime_to_epoch_millis(metadata.updated_at);
+        sqlx::query("UPDATE threads SET updated_at_ms = ? WHERE id = ?")
+            .bind(raw_ms + 1)
+            .bind(thread_id.to_string())
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("allocated timestamp should persist");
+        mark_thread_read(&runtime, thread_id).await;
+
+        let mut round_trip = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load")
+            .expect("thread should exist");
+        round_trip.rollout_path = codex_home.join("moved.jsonl");
+        runtime
+            .upsert_thread(&round_trip)
+            .await
+            .expect("metadata update");
+        assert_eq!(
+            snapshot_state(&runtime, thread_id).await,
+            (Some(raw_ms), raw_ms + 1, 0, raw_ms + 1),
+            "allocator-adjusted metadata must not be fed back as a raw source timestamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_invalidates_only_for_a_changed_snapshot() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let thread_id = ThreadId::new();
+        let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+        runtime.upsert_thread(&metadata).await.expect("insert");
+        mark_thread_read(&runtime, thread_id).await;
+        let before = snapshot_state(&runtime, thread_id).await;
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("idempotent update");
+        assert_eq!(snapshot_state(&runtime, thread_id).await, before);
+
+        metadata.preview = Some("equal timestamp snapshot".to_string());
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("equal snapshot");
+        assert_eq!(snapshot_state(&runtime, thread_id).await.3, 0);
+        mark_thread_read(&runtime, thread_id).await;
+        metadata.set_updated_at_from_source(metadata.updated_at - chrono::Duration::seconds(10));
+        metadata.preview = Some("regressive timestamp snapshot".to_string());
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("older snapshot");
+        assert_eq!(snapshot_state(&runtime, thread_id).await.3, 0);
+
+        mark_thread_read(&runtime, thread_id).await;
+        sqlx::query("UPDATE threads SET updated_at = updated_at WHERE id = ?")
+            .bind(thread_id.to_string())
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("legacy snapshot should persist");
+        assert_eq!(snapshot_state(&runtime, thread_id).await.3, 0);
+    }
+
     #[tokio::test]
     async fn upsert_thread_keeps_creation_memory_mode_for_existing_rows() {
         let codex_home = unique_temp_dir();
@@ -1442,7 +1685,11 @@ mod tests {
         let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
 
         runtime
-            .upsert_thread_with_creation_memory_mode(&metadata, Some("disabled"))
+            .upsert_thread_with_creation_memory_mode(
+                &metadata,
+                Some("disabled"),
+                ThreadSnapshotWrite::Reconcile,
+            )
             .await
             .expect("initial insert should succeed");
 

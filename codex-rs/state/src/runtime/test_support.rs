@@ -25,6 +25,8 @@ use uuid::Uuid;
 
 #[cfg(test)]
 use crate::ThreadMetadata;
+#[cfg(test)]
+use crate::model::ThreadSourceUpdatedAt;
 
 #[cfg(test)]
 pub(super) fn unique_temp_dir() -> PathBuf {
@@ -49,6 +51,7 @@ pub(super) fn test_thread_metadata(
         rollout_path: codex_home.join(format!("rollout-{thread_id}.jsonl")),
         created_at: now,
         updated_at: now,
+        source_updated_at: ThreadSourceUpdatedAt::Rollout,
         recency_at: now,
         source: "cli".to_string(),
         history_mode: ThreadHistoryMode::Legacy,

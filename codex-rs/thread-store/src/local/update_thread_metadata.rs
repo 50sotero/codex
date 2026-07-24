@@ -221,6 +221,7 @@ async fn apply_metadata_update(
                         message: format!("failed to read thread metadata for {thread_id}: {err}"),
                     })?;
             let advance_recency_at = patch.advance_recency_at;
+            let live_touch_at = patch.updated_at;
             if existing.is_none() && rollout_path.is_none() {
                 let resolved = resolve_rollout_path(store, thread_id, include_archived).await?;
                 rollout_path_archived = resolved.archived;
@@ -271,8 +272,13 @@ async fn apply_metadata_update(
             if let Some(created_at) = patch.created_at {
                 metadata.created_at = created_at;
             }
-            if let Some(updated_at) = patch.updated_at {
-                metadata.updated_at = updated_at;
+            if let Some(updated_at) = live_touch_at
+                .and_then(|_| std::fs::metadata(metadata.rollout_path.as_path()).ok())
+                .and_then(|metadata| metadata.modified().ok())
+                .map(chrono::DateTime::<Utc>::from)
+                .or(live_touch_at)
+            {
+                metadata.set_updated_at_from_source(updated_at);
             }
             if existing.is_none()
                 && let Some(recency_at) = advance_recency_at
@@ -329,6 +335,16 @@ async fn apply_metadata_update(
                 .map_err(|err| ThreadStoreError::Internal {
                     message: format!("failed to update thread metadata for {thread_id}: {err}"),
                 })?;
+            if existing.is_some()
+                && let Some(updated_at) = live_touch_at
+            {
+                state_db
+                    .touch_thread_updated_at(thread_id, updated_at)
+                    .await
+                    .map_err(|err| ThreadStoreError::Internal {
+                        message: format!("failed to touch thread metadata for {thread_id}: {err}"),
+                    })?;
+            }
             if existing.is_some()
                 && let Some(recency_at) = advance_recency_at
             {
