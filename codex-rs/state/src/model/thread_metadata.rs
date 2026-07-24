@@ -275,7 +275,8 @@ impl ThreadMetadata {
         }
     }
 
-    pub(crate) fn set_updated_at_from_source(&mut self, updated_at: DateTime<Utc>) {
+    /// Record an explicit source-observed update rather than a persisted allocator value.
+    pub fn set_updated_at_from_source(&mut self, updated_at: DateTime<Utc>) {
         self.updated_at = updated_at;
         self.source_updated_at = ThreadSourceUpdatedAt::Rollout;
     }

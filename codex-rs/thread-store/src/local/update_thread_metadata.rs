@@ -272,7 +272,7 @@ async fn apply_metadata_update(
                 metadata.created_at = created_at;
             }
             if let Some(updated_at) = patch.updated_at {
-                metadata.updated_at = updated_at;
+                metadata.set_updated_at_from_source(updated_at);
             }
             if existing.is_none()
                 && let Some(recency_at) = advance_recency_at
