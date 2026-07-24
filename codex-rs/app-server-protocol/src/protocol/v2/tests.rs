@@ -189,6 +189,8 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             model_provider: "openai".to_string(),
             created_at: 1,
             updated_at: 1,
+            read_at: None,
+            has_unread: false,
             recency_at: Some(1),
             status: ThreadStatus::Idle,
             path: None,

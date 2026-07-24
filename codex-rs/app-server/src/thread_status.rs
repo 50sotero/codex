@@ -9,12 +9,36 @@ use codex_app_server_protocol::ThreadActiveFlag;
 use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadStatusChangedNotification;
 use codex_protocol::ThreadId;
+use codex_rollout::state_db::StateDbHandle;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 #[cfg(test)]
 use tokio::sync::mpsc;
 use tokio::sync::watch;
+use tracing::warn;
+
+pub(crate) async fn attach_thread_read_state_from_db(
+    state_db: Option<&StateDbHandle>,
+    thread: &mut Thread,
+) {
+    let Some(state_db) = state_db else {
+        return;
+    };
+    let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
+        return;
+    };
+    match state_db.get_thread_read_state(thread_id).await {
+        Ok(Some(read_state)) => {
+            thread.read_at = read_state.read_at.map(|read_at| read_at.timestamp());
+            thread.has_unread = read_state.has_unread();
+        }
+        Ok(None) => {}
+        Err(err) => {
+            warn!(%thread_id, %err, "failed to project thread read state");
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct ThreadWatchManager {
@@ -899,6 +923,8 @@ mod tests {
             model_provider: "mock-provider".to_string(),
             created_at: 0,
             updated_at: 0,
+            read_at: None,
+            has_unread: false,
             recency_at: Some(0),
             status: ThreadStatus::NotLoaded,
             path: None,
