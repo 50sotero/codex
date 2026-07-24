@@ -175,6 +175,7 @@ fn thread_read_state_mark_all_contract_preserves_empty_scope_time() {
             use_state_db_only: true,
         }
     );
+    assert!(serde_json::from_value::<ThreadReadStateMarkAllParams>(json!({})).is_err());
 
     let response = serde_json::to_value(ThreadReadStateMarkAllResponse {
         total_count: 0,

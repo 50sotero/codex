@@ -1315,7 +1315,6 @@ pub struct ThreadReadStateScope {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadReadStateMarkAllParams {
-    #[serde(default)]
     #[ts(inline)]
     pub scope: ThreadReadStateScope,
 }
