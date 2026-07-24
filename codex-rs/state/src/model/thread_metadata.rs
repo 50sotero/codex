@@ -84,6 +84,8 @@ pub struct ThreadMetadata {
     pub created_at: DateTime<Utc>,
     /// The last update timestamp.
     pub updated_at: DateTime<Utc>,
+    /// Whether `updated_at` is rollout-derived or allocator-adjusted persisted state.
+    pub(crate) source_updated_at: ThreadSourceUpdatedAt,
     /// The product recency timestamp.
     pub recency_at: DateTime<Utc>,
     /// The session source (stringified enum).
@@ -128,6 +130,12 @@ pub struct ThreadMetadata {
     pub git_branch: Option<String>,
     /// The git origin URL, if known.
     pub git_origin_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ThreadSourceUpdatedAt {
+    Rollout,
+    Persisted(Option<DateTime<Utc>>),
 }
 
 /// Builder data required to construct [`ThreadMetadata`] without parsing filenames.
@@ -226,6 +234,7 @@ impl ThreadMetadataBuilder {
             rollout_path: self.rollout_path.clone(),
             created_at,
             updated_at,
+            source_updated_at: ThreadSourceUpdatedAt::Rollout,
             recency_at,
             source,
             history_mode: self.history_mode,
@@ -259,6 +268,18 @@ impl ThreadMetadataBuilder {
 }
 
 impl ThreadMetadata {
+    pub(crate) fn source_updated_at(&self) -> Option<DateTime<Utc>> {
+        match self.source_updated_at {
+            ThreadSourceUpdatedAt::Rollout => Some(self.updated_at),
+            ThreadSourceUpdatedAt::Persisted(updated_at) => updated_at,
+        }
+    }
+
+    pub(crate) fn set_updated_at_from_source(&mut self, updated_at: DateTime<Utc>) {
+        self.updated_at = updated_at;
+        self.source_updated_at = ThreadSourceUpdatedAt::Rollout;
+    }
+
     /// Preserve existing non-null Git fields when rollout-derived metadata is reconciled.
     pub fn prefer_existing_git_info(&mut self, existing: &Self) {
         if existing.git_sha.is_some() {
@@ -373,6 +394,7 @@ pub(crate) struct ThreadRow {
     rollout_path: String,
     created_at: i64,
     updated_at: i64,
+    source_updated_at: Option<i64>,
     recency_at: i64,
     source: String,
     history_mode: String,
@@ -404,6 +426,7 @@ impl ThreadRow {
             rollout_path: row.try_get("rollout_path")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
+            source_updated_at: row.try_get("source_updated_at")?,
             recency_at: row.try_get("recency_at")?,
             source: row.try_get("source")?,
             history_mode: row.try_get("history_mode")?,
@@ -439,6 +462,7 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             rollout_path,
             created_at,
             updated_at,
+            source_updated_at,
             recency_at,
             source,
             history_mode,
@@ -472,6 +496,11 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             rollout_path: PathBuf::from(rollout_path),
             created_at: epoch_millis_to_datetime(created_at)?,
             updated_at: epoch_millis_to_datetime(updated_at)?,
+            source_updated_at: ThreadSourceUpdatedAt::Persisted(
+                source_updated_at
+                    .map(strict_epoch_millis_to_datetime)
+                    .transpose()?,
+            ),
             recency_at: epoch_millis_to_datetime(recency_at)?,
             source,
             history_mode,
@@ -523,21 +552,22 @@ pub(crate) fn datetime_to_epoch_seconds(dt: DateTime<Utc>) -> i64 {
     dt.timestamp()
 }
 
-pub(crate) fn normalize_epoch_millis(value: i64) -> i64 {
+pub(crate) fn epoch_millis_to_datetime(value: i64) -> Result<DateTime<Utc>> {
     // Values older than 2020 if interpreted as milliseconds are legacy second-precision rows.
     // Normalize them once so newly persisted timestamp fields always have strict-ms semantics.
     const MIN_EPOCH_MILLIS: i64 = 1_577_836_800_000;
-    if value < MIN_EPOCH_MILLIS {
+    let millis = if value < MIN_EPOCH_MILLIS {
         value.saturating_mul(1000)
     } else {
         value
-    }
-}
-
-pub(crate) fn epoch_millis_to_datetime(value: i64) -> Result<DateTime<Utc>> {
-    let millis = normalize_epoch_millis(value);
+    };
     DateTime::<Utc>::from_timestamp_millis(millis)
         .ok_or_else(|| anyhow::anyhow!("invalid unix timestamp millis: {value}"))
+}
+
+fn strict_epoch_millis_to_datetime(value: i64) -> Result<DateTime<Utc>> {
+    DateTime::<Utc>::from_timestamp_millis(value)
+        .ok_or_else(|| anyhow::anyhow!("invalid strict unix timestamp millis: {value}"))
 }
 
 pub(crate) fn epoch_seconds_to_datetime(value: i64) -> Result<DateTime<Utc>> {
@@ -560,6 +590,7 @@ pub struct BackfillStats {
 mod tests {
     use super::ThreadMetadata;
     use super::ThreadRow;
+    use super::ThreadSourceUpdatedAt;
     use chrono::DateTime;
     use chrono::Utc;
     use codex_protocol::ThreadId;
@@ -574,6 +605,7 @@ mod tests {
             rollout_path: "/tmp/rollout-123.jsonl".to_string(),
             created_at: 1_700_000_000,
             updated_at: 1_700_000_100,
+            source_updated_at: Some(1_700_000_100_000),
             recency_at: 1_700_000_100,
             source: "cli".to_string(),
             history_mode: "legacy".to_string(),
@@ -606,6 +638,9 @@ mod tests {
             rollout_path: PathBuf::from("/tmp/rollout-123.jsonl"),
             created_at: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).expect("timestamp"),
             updated_at: DateTime::<Utc>::from_timestamp(1_700_000_100, 0).expect("timestamp"),
+            source_updated_at: ThreadSourceUpdatedAt::Persisted(Some(
+                DateTime::<Utc>::from_timestamp(1_700_000_100, 0).expect("timestamp"),
+            )),
             recency_at: DateTime::<Utc>::from_timestamp(1_700_000_100, 0).expect("timestamp"),
             source: "cli".to_string(),
             history_mode: ThreadHistoryMode::Legacy,

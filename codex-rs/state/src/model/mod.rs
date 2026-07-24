@@ -5,7 +5,6 @@ mod log;
 mod memories;
 mod thread_goal;
 mod thread_metadata;
-mod thread_read_state;
 
 pub use agent_job::AgentJob;
 pub use agent_job::AgentJobCreateParams;
@@ -36,15 +35,14 @@ pub use thread_metadata::ThreadMetadata;
 pub use thread_metadata::ThreadMetadataBuilder;
 pub use thread_metadata::ThreadRelationFilter;
 pub use thread_metadata::ThreadsPage;
-pub use thread_read_state::ThreadReadState;
-pub use thread_read_state::ThreadReadStateMarkAllOutcome;
 
 pub(crate) use agent_job::AgentJobItemRow;
 pub(crate) use agent_job::AgentJobRow;
 pub(crate) use thread_goal::ThreadGoalRow;
 pub(crate) use thread_metadata::ThreadRow;
+#[cfg(test)]
+pub(crate) use thread_metadata::ThreadSourceUpdatedAt;
 pub(crate) use thread_metadata::anchor_from_item;
 pub(crate) use thread_metadata::datetime_to_epoch_millis;
 pub(crate) use thread_metadata::datetime_to_epoch_seconds;
 pub(crate) use thread_metadata::epoch_millis_to_datetime;
-pub(crate) use thread_metadata::normalize_epoch_millis;

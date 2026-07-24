@@ -161,6 +161,7 @@ pub(crate) fn enum_to_string<T: Serialize>(value: &T) -> String {
 mod tests {
     use super::apply_rollout_item;
     use crate::model::ThreadMetadata;
+    use crate::model::ThreadSourceUpdatedAt;
     use chrono::DateTime;
     use chrono::Utc;
     use codex_protocol::ThreadId;
@@ -564,6 +565,7 @@ mod tests {
             rollout_path: PathBuf::from("/tmp/a.jsonl"),
             created_at,
             updated_at: created_at,
+            source_updated_at: ThreadSourceUpdatedAt::Rollout,
             recency_at: created_at,
             source: "cli".to_string(),
             history_mode: Default::default(),
