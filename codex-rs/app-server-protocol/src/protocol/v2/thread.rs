@@ -1286,6 +1286,53 @@ pub struct ThreadReadResponse {
     pub thread: Thread,
 }
 
+/// Filters selecting the persisted threads affected by a read-state operation.
+#[derive(Default, Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadReadStateScope {
+    /// Optional provider filter. Omission selects the current provider; an empty list selects all.
+    #[ts(optional = nullable)]
+    pub model_providers: Option<Vec<String>>,
+    /// Optional source filter. Omission or an empty list selects interactive sources.
+    #[ts(optional = nullable)]
+    pub source_kinds: Option<Vec<ThreadSourceKind>>,
+    /// True selects archived threads; omission or false selects active threads.
+    #[ts(optional = nullable)]
+    pub archived: Option<bool>,
+    /// Optional exact working-directory filter or filters.
+    #[ts(optional = nullable, type = "string | Array<string> | null")]
+    pub cwd: Option<ThreadListCwdFilter>,
+    /// Optional substring filter for the extracted thread title or preview.
+    #[ts(optional = nullable)]
+    pub search_term: Option<String>,
+    /// Read from the state DB without scanning rollouts to repair metadata.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub use_state_db_only: bool,
+}
+
+/// Parameters for atomically advancing read markers across a persisted thread scope.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadReadStateMarkAllParams {
+    #[serde(default)]
+    #[ts(inline)]
+    pub scope: ThreadReadStateScope,
+}
+
+/// Counts and completion time for a scoped read-state update.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadReadStateMarkAllResponse {
+    pub total_count: u32,
+    pub marked_count: u32,
+    pub already_read_count: u32,
+    /// Observational completion time in Unix seconds, or null when the scope matched no threads.
+    #[ts(type = "number | null")]
+    pub read_at: Option<i64>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

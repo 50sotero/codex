@@ -1,6 +1,10 @@
 use super::*;
 use crate::error_code::method_not_found;
+use crate::thread_status::attach_thread_read_state_from_db;
 use codex_app_server_protocol::SelectedCapabilityRoot;
+use codex_app_server_protocol::ThreadReadStateMarkAllParams;
+use codex_app_server_protocol::ThreadReadStateMarkAllResponse;
+use codex_app_server_protocol::ThreadReadStateScope;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
@@ -13,6 +17,7 @@ const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
 const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
     "thread/rollback is deprecated and will be removed soon";
 
+#[derive(Clone)]
 struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
     source_kinds: Option<Vec<ThreadSourceKind>>,
@@ -695,6 +700,15 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_read_state_mark_all(
+        &self,
+        params: ThreadReadStateMarkAllParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_read_state_mark_all_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn thread_turns_list(
         &self,
         params: ThreadTurnsListParams,
@@ -968,12 +982,14 @@ impl ThreadRequestProcessor {
         };
         let request_trace = request_context.request_trace();
         let config_manager = self.config_manager.clone();
+        let state_db = self.state_db.clone();
         let outgoing = Arc::clone(&listener_task_context.outgoing);
         let error_request_id = request_id.clone();
         let thread_start_task = async move {
             if let Err(error) = Self::thread_start_task(
                 listener_task_context,
                 config_manager,
+                state_db,
                 request_id,
                 app_server_client_name,
                 app_server_client_version,
@@ -1050,6 +1066,7 @@ impl ThreadRequestProcessor {
     async fn thread_start_task(
         listener_task_context: ListenerTaskContext,
         config_manager: ConfigManager,
+        state_db: Option<StateDbHandle>,
         request_id: ConnectionRequestId,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
@@ -1266,6 +1283,7 @@ impl ThreadRequestProcessor {
                 .await,
             /*has_in_progress_turn*/ false,
         );
+        attach_thread_read_state_from_db(state_db.as_ref(), &mut thread).await;
 
         let sandbox = thread_response_sandbox_policy(
             &config_snapshot.permission_profile,
@@ -1651,6 +1669,7 @@ impl ThreadRequestProcessor {
                 .await,
             /*has_in_progress_turn*/ false,
         );
+        self.attach_thread_read_state(&mut thread).await;
 
         Ok(ThreadMetadataUpdateResponse { thread })
     }
@@ -1704,6 +1723,7 @@ impl ThreadRequestProcessor {
             /*has_in_progress_turn*/ false,
         );
         self.attach_thread_name(thread_id, &mut thread).await;
+        self.attach_thread_read_state(&mut thread).await;
         let thread_id = thread.id.clone();
         Ok((ThreadUnarchiveResponse { thread }, thread_id))
     }
@@ -1989,7 +2009,7 @@ impl ThreadRequestProcessor {
             .loaded_statuses_for_threads(status_ids)
             .await;
 
-        let data: Vec<_> = threads
+        let mut data: Vec<_> = threads
             .into_iter()
             .map(|mut thread| {
                 if let Some(status) = statuses.get(&thread.id) {
@@ -1998,6 +2018,7 @@ impl ThreadRequestProcessor {
                 thread
             })
             .collect();
+        self.attach_thread_read_states(&mut data).await;
         Ok(ThreadListResponse {
             data,
             next_cursor,
@@ -2114,7 +2135,7 @@ impl ThreadRequestProcessor {
             .thread_watch_manager
             .loaded_statuses_for_threads(status_ids)
             .await;
-        let data = results
+        let mut data: Vec<_> = results
             .into_iter()
             .map(|(mut thread, snippet)| {
                 if let Some(status) = statuses.get(&thread.id) {
@@ -2123,6 +2144,9 @@ impl ThreadRequestProcessor {
                 ThreadSearchResult { thread, snippet }
             })
             .collect();
+        for result in &mut data {
+            self.attach_thread_read_state(&mut result.thread).await;
+        }
 
         Ok(ThreadSearchResponse {
             data,
@@ -2190,11 +2214,44 @@ impl ThreadRequestProcessor {
         let thread_uuid = ThreadId::from_string(&thread_id)
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
 
-        let thread = self
+        let mut thread = self
             .read_thread_view(thread_uuid, include_turns)
             .await
             .map_err(thread_read_view_error)?;
+        self.attach_thread_read_state(&mut thread).await;
         Ok(ThreadReadResponse { thread })
+    }
+
+    async fn thread_read_state_mark_all_response_inner(
+        &self,
+        params: ThreadReadStateMarkAllParams,
+    ) -> Result<ThreadReadStateMarkAllResponse, JSONRPCErrorError> {
+        let thread_ids = self
+            .list_thread_ids_for_read_state_scope(&params.scope)
+            .await?;
+        let outcome = self
+            .state_db_for_read_state()?
+            .mark_thread_ids_read(&thread_ids)
+            .await
+            .map_err(|err| internal_error(format!("failed to mark threads read: {err}")))?;
+        Ok(ThreadReadStateMarkAllResponse {
+            total_count: saturating_u32(outcome.total_count),
+            marked_count: saturating_u32(outcome.marked_count),
+            already_read_count: saturating_u32(outcome.already_read_count),
+            read_at: outcome
+                .operation_at
+                .map(|operation_at| operation_at.timestamp()),
+        })
+    }
+
+    async fn attach_thread_read_states(&self, threads: &mut [Thread]) {
+        for thread in threads {
+            self.attach_thread_read_state(thread).await;
+        }
+    }
+
+    async fn attach_thread_read_state(&self, thread: &mut Thread) {
+        attach_thread_read_state_from_db(self.state_db.as_ref(), thread).await;
     }
 
     /// Builds the API view for `thread/read` from persisted metadata plus optional live state.
@@ -2843,6 +2900,7 @@ impl ThreadRequestProcessor {
                     thread_status,
                     /*has_live_in_progress_turn*/ false,
                 );
+                self.attach_thread_read_state(&mut thread).await;
                 let config_snapshot = codex_thread.config_snapshot().await;
                 let sandbox = thread_response_sandbox_policy(
                     &config_snapshot.permission_profile,
@@ -3093,6 +3151,7 @@ impl ThreadRequestProcessor {
                 /*include_turns*/ false,
             );
             thread_summary.session_id = existing_thread.session_configured().session_id.to_string();
+            self.attach_thread_read_state(&mut thread_summary).await;
             let instruction_sources = existing_thread.legacy_instruction_sources().await;
 
             let listener_command_tx = {
@@ -3600,6 +3659,7 @@ impl ThreadRequestProcessor {
                 .await,
             /*has_in_progress_turn*/ false,
         );
+        self.attach_thread_read_state(&mut thread).await;
         let config_snapshot = forked_thread.config_snapshot().await;
         let sandbox = thread_response_sandbox_policy(
             &config_snapshot.permission_profile,
@@ -3697,6 +3757,48 @@ impl ThreadRequestProcessor {
         let stored_thread = read_result?;
         let summary = summary_from_stored_thread(stored_thread, fallback_provider);
         Ok(GetConversationSummaryResponse { summary })
+    }
+
+    async fn list_thread_ids_for_read_state_scope(
+        &self,
+        scope: &ThreadReadStateScope,
+    ) -> Result<Vec<ThreadId>, JSONRPCErrorError> {
+        let filters = ThreadListFilters {
+            model_providers: scope.model_providers.clone(),
+            source_kinds: scope.source_kinds.clone(),
+            archived: scope.archived.unwrap_or(false),
+            cwd_filters: normalize_thread_list_cwd_filters(scope.cwd.clone())?,
+            search_term: scope.search_term.clone(),
+            use_state_db_only: scope.use_state_db_only,
+            relation_filter: None,
+        };
+        let mut cursor = None;
+        let mut thread_ids = Vec::new();
+        loop {
+            let (page, next_cursor) = self
+                .list_threads_common(
+                    THREAD_LIST_MAX_LIMIT,
+                    cursor.clone(),
+                    StoreThreadSortKey::RecencyAt,
+                    SortDirection::Desc,
+                    filters.clone(),
+                )
+                .await?;
+            thread_ids.extend(page.into_iter().map(|thread| thread.thread_id));
+            match next_cursor {
+                Some(next_cursor) if cursor.as_ref() != Some(&next_cursor) => {
+                    cursor = Some(next_cursor);
+                }
+                Some(_) | None => break,
+            }
+        }
+        Ok(thread_ids)
+    }
+
+    fn state_db_for_read_state(&self) -> Result<&StateDbHandle, JSONRPCErrorError> {
+        self.state_db
+            .as_ref()
+            .ok_or_else(|| unsupported_thread_store_operation("thread read-state persistence"))
     }
 
     async fn list_threads_common(
@@ -3810,6 +3912,10 @@ impl ThreadRequestProcessor {
 
         Ok((items, next_cursor))
     }
+}
+
+fn saturating_u32(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 fn xcode_26_4_mcp_elicitations_auto_deny(
@@ -4283,6 +4389,8 @@ pub(crate) fn thread_from_stored_thread(
         },
         created_at: thread.created_at.timestamp(),
         updated_at: thread.updated_at.timestamp(),
+        read_at: None,
+        has_unread: false,
         recency_at: Some(thread.recency_at.timestamp()),
         status: ThreadStatus::NotLoaded,
         path,
@@ -4491,6 +4599,8 @@ fn build_thread_from_snapshot(
         model_provider: config_snapshot.model_provider_id.clone(),
         created_at: now,
         updated_at: now,
+        read_at: None,
+        has_unread: false,
         recency_at: Some(now),
         status: ThreadStatus::NotLoaded,
         path,

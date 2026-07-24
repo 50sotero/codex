@@ -2353,6 +2353,8 @@ mod tests {
                 model_provider: "openai".to_string(),
                 created_at: 1,
                 updated_at: 2,
+                read_at: None,
+                has_unread: false,
                 recency_at: Some(2),
                 status: ThreadStatus::Idle,
                 path: None,

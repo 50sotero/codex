@@ -1,4 +1,5 @@
 use super::*;
+use crate::thread_status::attach_thread_read_state_from_db;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::protocol::AdditionalContextEntry as CoreAdditionalContextEntry;
@@ -1273,6 +1274,8 @@ impl TurnRequestProcessor {
                         .await,
                     /*has_in_progress_turn*/ false,
                 );
+                let state_db = review_thread.state_db();
+                attach_thread_read_state_from_db(state_db.as_ref(), &mut thread).await;
                 let notif = thread_started_notification(thread);
                 self.outgoing
                     .send_server_notification(ServerNotification::ThreadStarted(notif))

@@ -1076,6 +1076,11 @@
           ],
           "description": "Optional Git metadata captured when the thread was created."
         },
+        "hasUnread": {
+          "default": false,
+          "description": "True when persisted thread state has an update newer than `readAt`.",
+          "type": "boolean"
+        },
         "id": {
           "description": "Identifier for this thread. Codex-generated thread IDs are UUIDv7.",
           "type": "string"
@@ -1108,6 +1113,15 @@
         "preview": {
           "description": "Usually the first user message in the thread, if available.",
           "type": "string"
+        },
+        "readAt": {
+          "default": null,
+          "description": "Unix timestamp (in seconds) for the last persisted read high-water mark.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "recencyAt": {
           "description": "Unix timestamp (in seconds) used for thread recency ordering.",

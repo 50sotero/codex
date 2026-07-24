@@ -36,6 +36,12 @@ createdAt: number, /**
  * Unix timestamp (in seconds) when the thread was last updated.
  */
 updatedAt: number, /**
+ * Unix timestamp (in seconds) for the last persisted read high-water mark.
+ */
+readAt: number | null, /**
+ * True when persisted thread state has an update newer than `readAt`.
+ */
+hasUnread: boolean, /**
  * Unix timestamp (in seconds) used for thread recency ordering.
  */
 recencyAt: number | null, /**
