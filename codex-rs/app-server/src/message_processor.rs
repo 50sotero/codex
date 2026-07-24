@@ -1223,6 +1223,11 @@ impl MessageProcessor {
             ClientRequest::ThreadRead { params, .. } => {
                 self.thread_processor.thread_read(params).await
             }
+            ClientRequest::ThreadReadStateMarkAll { params, .. } => {
+                self.thread_processor
+                    .thread_read_state_mark_all(params)
+                    .await
+            }
             ClientRequest::ThreadTurnsList { params, .. } => {
                 self.thread_processor.thread_turns_list(params).await
             }

@@ -48,6 +48,7 @@ const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
     "RemoteControlClient",
     "RemoteControlClientsListOrder",
     "ThreadBackgroundTerminal",
+    "ThreadReadStateScope",
 ];
 const SPECIAL_DEFINITIONS: &[&str] = &[
     "ClientNotification",
@@ -2864,6 +2865,7 @@ permissionProfile?: string | null};
             client_request_json.contains("mock/experimentalMethod"),
             false
         );
+        assert_eq!(client_request_json.contains("ThreadReadStateScope"), false);
         assert_eq!(output_dir.join("EventMsg.json").exists(), false);
 
         let bundle_json =
@@ -2892,6 +2894,8 @@ permissionProfile?: string | null};
             flat_v2_bundle_json.contains("RemoteControlClientsListOrder"),
             false
         );
+        assert_eq!(bundle_json.contains("ThreadReadStateScope"), false);
+        assert_eq!(flat_v2_bundle_json.contains("ThreadReadStateScope"), false);
         assert_eq!(flat_v2_bundle_json.contains("#/definitions/v2/"), false);
         assert_eq!(
             flat_v2_bundle_json.contains("\"title\": \"CodexAppServerProtocolV2\""),
@@ -2976,6 +2980,13 @@ permissionProfile?: string | null};
             output_dir
                 .join("v2")
                 .join("RemoteControlClientsListOrder.json")
+                .exists(),
+            false
+        );
+        assert_eq!(
+            output_dir
+                .join("v2")
+                .join("ThreadReadStateScope.json")
                 .exists(),
             false
         );

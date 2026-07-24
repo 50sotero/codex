@@ -6,6 +6,9 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
+use codex_app_server_protocol::ThreadReadStateMarkAllParams;
+use codex_app_server_protocol::ThreadReadStateMarkAllResponse;
+use codex_app_server_protocol::ThreadReadStateScope;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadSourceKind;
@@ -44,6 +47,31 @@ async fn list_all_threads(
     to_response(response)
 }
 
+async fn mark_all(
+    mcp: &mut TestAppServer,
+    model_provider: &str,
+) -> Result<ThreadReadStateMarkAllResponse> {
+    let request_id = mcp
+        .send_raw_request(
+            "thread/readState/markAll",
+            Some(serde_json::to_value(ThreadReadStateMarkAllParams {
+                scope: ThreadReadStateScope {
+                    model_providers: Some(vec![model_provider.to_string()]),
+                    source_kinds: Some(vec![ThreadSourceKind::Cli]),
+                    use_state_db_only: true,
+                    ..Default::default()
+                },
+            })?),
+        )
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    to_response(response)
+}
+
 async fn resume_thread(mcp: &mut TestAppServer, thread_id: &str) -> Result<ThreadResumeResponse> {
     let request_id = mcp
         .send_thread_resume_request(ThreadResumeParams {
@@ -61,7 +89,7 @@ async fn resume_thread(mcp: &mut TestAppServer, thread_id: &str) -> Result<Threa
 }
 
 #[tokio::test]
-async fn projects_persisted_read_state_across_list_and_resume() -> Result<()> {
+async fn scoped_mark_all_projects_read_state_and_preserves_empty_operation_time() -> Result<()> {
     let codex_home = TempDir::new()?;
     std::fs::write(
         codex_home.path().join("config.toml"),
@@ -75,14 +103,32 @@ async fn projects_persisted_read_state_across_list_and_resume() -> Result<()> {
         Some("openai"),
         None,
     )?;
+    let second_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T12-01-00",
+        "2025-01-05T12:01:00Z",
+        "second",
+        Some("provider-b"),
+        None,
+    )?;
+
     let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(READ_TIMEOUT, mcp.initialize()).await??;
 
     let initial = list_all_threads(&mut mcp, false).await?;
-    assert_eq!(initial.data.len(), 1);
+    assert_eq!(initial.data.len(), 2);
+    assert!(initial.data.iter().all(|thread| thread.read_at.is_none()));
+    assert!(initial.data.iter().all(|thread| thread.has_unread));
+
+    let marked = mark_all(&mut mcp, "openai").await?;
     assert_eq!(
-        (initial.data[0].read_at, initial.data[0].has_unread),
-        (None, true)
+        (
+            marked.total_count,
+            marked.marked_count,
+            marked.already_read_count,
+            marked.read_at.is_some(),
+        ),
+        (1, 1, 0, true)
     );
 
     let current = list_all_threads(&mut mcp, true).await?;
@@ -91,20 +137,30 @@ async fn projects_persisted_read_state_across_list_and_resume() -> Result<()> {
         .iter()
         .find(|thread| thread.id == first_id)
         .expect("first thread");
-    assert_eq!((first.read_at, first.has_unread), (None, true));
+    assert!(first.read_at.is_some());
+    assert!(!first.has_unread);
+    let second = current
+        .data
+        .iter()
+        .find(|thread| thread.id == second_id)
+        .expect("second thread");
+    assert_eq!((second.read_at, second.has_unread), (None, true));
 
     let cold_resume = resume_thread(&mut mcp, &first_id).await?;
-    assert_eq!(
-        (cold_resume.thread.read_at, cold_resume.thread.has_unread),
-        (None, true)
-    );
+    assert!(cold_resume.thread.read_at.is_some());
+    assert!(!cold_resume.thread.has_unread);
     let loaded_resume = resume_thread(&mut mcp, &first_id).await?;
+    assert!(loaded_resume.thread.read_at.is_some());
+    assert!(!loaded_resume.thread.has_unread);
+
     assert_eq!(
-        (
-            loaded_resume.thread.read_at,
-            loaded_resume.thread.has_unread
-        ),
-        (None, true)
+        mark_all(&mut mcp, "missing-provider").await?,
+        ThreadReadStateMarkAllResponse {
+            total_count: 0,
+            marked_count: 0,
+            already_read_count: 0,
+            read_at: None,
+        }
     );
     Ok(())
 }

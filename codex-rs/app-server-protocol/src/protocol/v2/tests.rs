@@ -152,6 +152,50 @@ fn thread_turns_list_params_accepts_items_view() {
 }
 
 #[test]
+fn thread_read_state_mark_all_contract_preserves_empty_scope_time() {
+    let params = serde_json::from_value::<ThreadReadStateMarkAllParams>(json!({
+        "scope": {
+            "modelProviders": ["openai"],
+            "sourceKinds": ["cli"],
+            "archived": false,
+            "cwd": ["/tmp/project"],
+            "searchTerm": "release",
+            "useStateDbOnly": true
+        }
+    }))
+    .expect("read-state scope should deserialize");
+    assert_eq!(
+        params.scope,
+        ThreadReadStateScope {
+            model_providers: Some(vec!["openai".to_string()]),
+            source_kinds: Some(vec![ThreadSourceKind::Cli]),
+            archived: Some(false),
+            cwd: Some(ThreadListCwdFilter::Many(vec!["/tmp/project".to_string()])),
+            search_term: Some("release".to_string()),
+            use_state_db_only: true,
+        }
+    );
+    assert!(serde_json::from_value::<ThreadReadStateMarkAllParams>(json!({})).is_err());
+
+    let response = serde_json::to_value(ThreadReadStateMarkAllResponse {
+        total_count: 0,
+        marked_count: 0,
+        already_read_count: 0,
+        read_at: None,
+    })
+    .expect("read-state response should serialize");
+    assert_eq!(
+        response,
+        json!({
+            "totalCount": 0,
+            "markedCount": 0,
+            "alreadyReadCount": 0,
+            "readAt": null
+        })
+    );
+}
+
+#[test]
 fn thread_resume_params_accept_turns_page_bootstrap() {
     let params = serde_json::from_value::<ThreadResumeParams>(json!({
         "threadId": "thr_123",

@@ -88,6 +88,7 @@ pub use recovery::sqlite_error_detail_is_corruption;
 pub use recovery::sqlite_error_detail_is_lock;
 pub use remote_control::RemoteControlEnrollmentRecord;
 pub use thread_read_state::ThreadReadState;
+pub use thread_read_state::ThreadReadStateMarkAllOutcome;
 pub use threads::ThreadFilterOptions;
 
 // "Partition" is the retained-log-content bucket we cap at 10 MiB:

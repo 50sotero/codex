@@ -634,6 +634,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadReadResponse,
     },
+    #[experimental("thread/readState/markAll")]
+    ThreadReadStateMarkAll => "thread/readState/markAll" {
+        params: v2::ThreadReadStateMarkAllParams,
+        serialization: global("thread_read_state"),
+        response: v2::ThreadReadStateMarkAllResponse,
+    },
     #[experimental("thread/turns/list")]
     ThreadTurnsList => "thread/turns/list" {
         params: v2::ThreadTurnsListParams,
