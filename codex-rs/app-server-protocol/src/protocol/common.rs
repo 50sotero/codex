@@ -2591,6 +2591,8 @@ mod tests {
                     model_provider: "openai".to_string(),
                     created_at: 1,
                     updated_at: 2,
+                    read_at: None,
+                    has_unread: false,
                     recency_at: Some(3),
                     status: v2::ThreadStatus::Idle,
                     path: None,
@@ -2642,6 +2644,8 @@ mod tests {
                         "modelProvider": "openai",
                         "createdAt": 1,
                         "updatedAt": 2,
+                        "readAt": null,
+                        "hasUnread": false,
                         "recencyAt": 3,
                         "status": {
                             "type": "idle"

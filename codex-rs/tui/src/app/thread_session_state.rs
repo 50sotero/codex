@@ -419,6 +419,8 @@ mod tests {
             model_provider: "read-provider".to_string(),
             created_at: 1,
             updated_at: 2,
+            read_at: None,
+            has_unread: false,
             recency_at: Some(2),
             status: codex_app_server_protocol::ThreadStatus::Idle,
             path: None,

@@ -1,5 +1,6 @@
 use super::*;
 use crate::error_code::method_not_found;
+use crate::thread_status::attach_thread_read_state_from_db;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
@@ -968,12 +969,14 @@ impl ThreadRequestProcessor {
         };
         let request_trace = request_context.request_trace();
         let config_manager = self.config_manager.clone();
+        let state_db = self.state_db.clone();
         let outgoing = Arc::clone(&listener_task_context.outgoing);
         let error_request_id = request_id.clone();
         let thread_start_task = async move {
             if let Err(error) = Self::thread_start_task(
                 listener_task_context,
                 config_manager,
+                state_db,
                 request_id,
                 app_server_client_name,
                 app_server_client_version,
@@ -1050,6 +1053,7 @@ impl ThreadRequestProcessor {
     async fn thread_start_task(
         listener_task_context: ListenerTaskContext,
         config_manager: ConfigManager,
+        state_db: Option<StateDbHandle>,
         request_id: ConnectionRequestId,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
@@ -1266,6 +1270,7 @@ impl ThreadRequestProcessor {
                 .await,
             /*has_in_progress_turn*/ false,
         );
+        attach_thread_read_state_from_db(state_db.as_ref(), &mut thread).await;
 
         let sandbox = thread_response_sandbox_policy(
             &config_snapshot.permission_profile,
@@ -1651,6 +1656,7 @@ impl ThreadRequestProcessor {
                 .await,
             /*has_in_progress_turn*/ false,
         );
+        self.attach_thread_read_state(&mut thread).await;
 
         Ok(ThreadMetadataUpdateResponse { thread })
     }
@@ -1704,6 +1710,7 @@ impl ThreadRequestProcessor {
             /*has_in_progress_turn*/ false,
         );
         self.attach_thread_name(thread_id, &mut thread).await;
+        self.attach_thread_read_state(&mut thread).await;
         let thread_id = thread.id.clone();
         Ok((ThreadUnarchiveResponse { thread }, thread_id))
     }
@@ -1989,7 +1996,7 @@ impl ThreadRequestProcessor {
             .loaded_statuses_for_threads(status_ids)
             .await;
 
-        let data: Vec<_> = threads
+        let mut data: Vec<_> = threads
             .into_iter()
             .map(|mut thread| {
                 if let Some(status) = statuses.get(&thread.id) {
@@ -1998,6 +2005,7 @@ impl ThreadRequestProcessor {
                 thread
             })
             .collect();
+        self.attach_thread_read_states(&mut data).await;
         Ok(ThreadListResponse {
             data,
             next_cursor,
@@ -2114,7 +2122,7 @@ impl ThreadRequestProcessor {
             .thread_watch_manager
             .loaded_statuses_for_threads(status_ids)
             .await;
-        let data = results
+        let mut data: Vec<_> = results
             .into_iter()
             .map(|(mut thread, snippet)| {
                 if let Some(status) = statuses.get(&thread.id) {
@@ -2123,6 +2131,9 @@ impl ThreadRequestProcessor {
                 ThreadSearchResult { thread, snippet }
             })
             .collect();
+        for result in &mut data {
+            self.attach_thread_read_state(&mut result.thread).await;
+        }
 
         Ok(ThreadSearchResponse {
             data,
@@ -2190,11 +2201,22 @@ impl ThreadRequestProcessor {
         let thread_uuid = ThreadId::from_string(&thread_id)
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
 
-        let thread = self
+        let mut thread = self
             .read_thread_view(thread_uuid, include_turns)
             .await
             .map_err(thread_read_view_error)?;
+        self.attach_thread_read_state(&mut thread).await;
         Ok(ThreadReadResponse { thread })
+    }
+
+    async fn attach_thread_read_states(&self, threads: &mut [Thread]) {
+        for thread in threads {
+            self.attach_thread_read_state(thread).await;
+        }
+    }
+
+    async fn attach_thread_read_state(&self, thread: &mut Thread) {
+        attach_thread_read_state_from_db(self.state_db.as_ref(), thread).await;
     }
 
     /// Builds the API view for `thread/read` from persisted metadata plus optional live state.
@@ -2843,6 +2865,7 @@ impl ThreadRequestProcessor {
                     thread_status,
                     /*has_live_in_progress_turn*/ false,
                 );
+                self.attach_thread_read_state(&mut thread).await;
                 let config_snapshot = codex_thread.config_snapshot().await;
                 let sandbox = thread_response_sandbox_policy(
                     &config_snapshot.permission_profile,
@@ -3093,6 +3116,7 @@ impl ThreadRequestProcessor {
                 /*include_turns*/ false,
             );
             thread_summary.session_id = existing_thread.session_configured().session_id.to_string();
+            self.attach_thread_read_state(&mut thread_summary).await;
             let instruction_sources = existing_thread.legacy_instruction_sources().await;
 
             let listener_command_tx = {
@@ -3600,6 +3624,7 @@ impl ThreadRequestProcessor {
                 .await,
             /*has_in_progress_turn*/ false,
         );
+        self.attach_thread_read_state(&mut thread).await;
         let config_snapshot = forked_thread.config_snapshot().await;
         let sandbox = thread_response_sandbox_policy(
             &config_snapshot.permission_profile,
@@ -4283,6 +4308,8 @@ pub(crate) fn thread_from_stored_thread(
         },
         created_at: thread.created_at.timestamp(),
         updated_at: thread.updated_at.timestamp(),
+        read_at: None,
+        has_unread: false,
         recency_at: Some(thread.recency_at.timestamp()),
         status: ThreadStatus::NotLoaded,
         path,
@@ -4491,6 +4518,8 @@ fn build_thread_from_snapshot(
         model_provider: config_snapshot.model_provider_id.clone(),
         created_at: now,
         updated_at: now,
+        read_at: None,
+        has_unread: false,
         recency_at: Some(now),
         status: ThreadStatus::NotLoaded,
         path,

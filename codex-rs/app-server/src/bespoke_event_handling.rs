@@ -11,6 +11,7 @@ use crate::thread_state::TurnSummary;
 use crate::thread_state::resolve_server_request_on_thread_listener;
 use crate::thread_status::ThreadWatchActiveGuard;
 use crate::thread_status::ThreadWatchManager;
+use crate::thread_status::attach_thread_read_state_from_db;
 use codex_app_server_protocol::AccountRateLimitsUpdatedNotification;
 use codex_app_server_protocol::AdditionalPermissionProfile as V2AdditionalPermissionProfile;
 use codex_app_server_protocol::CodexErrorInfo as V2CodexErrorInfo;
@@ -1228,7 +1229,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 let loaded_status = thread_watch_manager
                     .loaded_status_for_thread(&conversation_id.to_string())
                     .await;
-                let response = match thread_rollback_response_from_stored_thread(
+                let mut response = match thread_rollback_response_from_stored_thread(
                     stored_thread,
                     conversation.session_configured().session_id.to_string(),
                     fallback_model_provider.as_str(),
@@ -1243,6 +1244,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                         return;
                     }
                 };
+                let state_db = conversation.state_db();
+                attach_thread_read_state_from_db(state_db.as_ref(), &mut response.thread).await;
 
                 outgoing.send_response(request_id, response).await;
             }
